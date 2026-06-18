@@ -54,18 +54,19 @@ _hr()  { printf '%*s\n' "$TERM_WIDTH" '' | tr ' ' "${1:--}"; }
 banner() {
   clear
   echo -e "${BLUE}${BOLD}"
-  echo "  ╔══════════════════════════════════════════════════════════════════╗"
-  echo "  ║                                                                  ║"
-  echo "  ║    ██████╗ ██╗   ██╗ ██████╗  ██████╗                          ║"
-  echo "  ║    ██╔══██╗╚██╗ ██╔╝██╔═══██╗██╔════╝                          ║"
-  echo "  ║    ██████╔╝ ╚████╔╝ ██║   ██║██║                               ║"
-  echo "  ║    ██╔══██╗  ╚██╔╝  ██║   ██║██║                               ║"
-  echo "  ║    ██████╔╝   ██║   ╚██████╔╝╚██████╗                          ║"
-  echo "  ║    ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝  CloudPrem Lab Installer ║"
-  echo "  ║                                                                  ║"
-  echo "  ╚══════════════════════════════════════════════════════════════════╝"
+  echo "  ╔════════════════════════════════════════════════════════════════╗"
+  echo "  ║                                                                ║"
+  echo "  ║    ██████╗ ██╗   ██╗ ██████╗  ██████╗                        ║"
+  echo "  ║    ██╔══██╗╚██╗ ██╔╝██╔═══██╗██╔════╝                        ║"
+  echo "  ║    ██████╔╝ ╚████╔╝ ██║   ██║██║                             ║"
+  echo "  ║    ██╔══██╗  ╚██╔╝  ██║   ██║██║                             ║"
+  echo "  ║    ██████╔╝   ██║   ╚██████╔╝╚██████╗                        ║"
+  echo "  ║    ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝  CloudPrem Lab Installer║"
+  echo "  ║                                                                ║"
+  echo "  ╚════════════════════════════════════════════════════════════════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}Bare-metal Kubernetes · SeaweedFS · QuickWit · Reverse Connection${NC}"
+  echo -e "  ${DIM}By Datadog SEs${NC}"
   echo ""
 }
 
@@ -81,7 +82,7 @@ section() {
 arch_diagram() {
   local phase="$1"
   echo -e "${DIM}"
-  echo "  ┌──────────────────────────────────────────────────────────────────┐"
+  echo "  ┌────────────────────────────────────────────────────────────────┐"
   local saas_color="$DIM" k8s_color="$DIM" pg_color="$DIM" agent_color="$DIM"
   local cilium_color="$DIM" storage_color="$DIM" cloudprem_color="$DIM"
   case "$phase" in
@@ -95,26 +96,26 @@ arch_diagram() {
                cilium_color="${GREEN}"; storage_color="${GREEN}"
                cloudprem_color="${GREEN}"; agent_color="${GREEN}" ;;
   esac
-  printf "  │  ${saas_color}%-64s${DIM}│\n" "  Datadog SaaS (app.datadoghq.com)"
-  echo   "  │         ↑ reverse WebSocket                                     │"
-  printf "  │  ${k8s_color}%-64s${DIM}│\n" "  Kubernetes (kubeadm)  ← Phase 1"
-  printf "  │    ${cilium_color}%-62s${DIM}│\n" "├─ Cilium CNI             ← Phase 2"
-  printf "  │    ${storage_color}%-62s${DIM}│\n" "├─ local-path + SeaweedFS ← Phase 3"
-  printf "  │    ${cloudprem_color}%-62s${DIM}│\n" "├─ CloudPrem (indexer/searcher/ctrl) ← Phase 5"
-  printf "  │    ${agent_color}%-62s${DIM}│\n" "└─ Datadog Agent          ← Phase 6"
-  echo   "  │                                                                  │"
-  printf "  │  ${pg_color}%-64s${DIM}│\n" "  PostgreSQL t3.micro     ← Phase 4 (parallel)"
-  echo   "  └──────────────────────────────────────────────────────────────────┘"
+  printf "  │  ${saas_color}%-62s${DIM}│\n" "  Datadog SaaS (app.datadoghq.com)"
+  echo   "  │         ↑ reverse WebSocket                                   │"
+  printf "  │  ${k8s_color}%-62s${DIM}│\n" "  Kubernetes (kubeadm)  ← Phase 1"
+  printf "  │    ${cilium_color}%-60s${DIM}│\n" "├─ Cilium CNI             ← Phase 2"
+  printf "  │    ${storage_color}%-60s${DIM}│\n" "├─ local-path + SeaweedFS ← Phase 3"
+  printf "  │    ${cloudprem_color}%-60s${DIM}│\n" "├─ CloudPrem (indexer/searcher/ctrl) ← Phase 5"
+  printf "  │    ${agent_color}%-60s${DIM}│\n" "└─ Datadog Agent          ← Phase 6"
+  echo   "  │                                                                │"
+  printf "  │  ${pg_color}%-62s${DIM}│\n" "  PostgreSQL t3.micro     ← Phase 4 (parallel)"
+  echo   "  └────────────────────────────────────────────────────────────────┘"
   echo -e "${NC}"
 }
 
 explain() {
   local text="$1"
-  echo -e "${DIM}  ╭─────────────────────────────────────────────────────────────────╮${NC}"
+  echo -e "${DIM}  ╭───────────────────────────────────────────────────────────────────╮${NC}"
   while IFS= read -r line; do
     printf "${DIM}  │${NC}  ${CYAN}%-65s${DIM}│${NC}\n" "$line"
   done <<< "$text"
-  echo -e "${DIM}  ╰─────────────────────────────────────────────────────────────────╯${NC}"
+  echo -e "${DIM}  ╰───────────────────────────────────────────────────────────────────╯${NC}"
   echo ""
 }
 
@@ -665,11 +666,11 @@ REMOTE
 print_dashboard() {
   echo ""
   echo -e "${GREEN}${BOLD}"
-  echo "  ╔══════════════════════════════════════════════════════════════════╗"
-  echo "  ║                                                                  ║"
-  echo "  ║   🎉  BYOC CloudPrem Lab is Live                                ║"
-  echo "  ║                                                                  ║"
-  echo "  ╚══════════════════════════════════════════════════════════════════╝"
+  echo "  ╔════════════════════════════════════════════════════════════════╗"
+  echo "  ║                                                                ║"
+  echo "  ║   🎉  BYOC CloudPrem Lab is Live                              ║"
+  echo "  ║                                                                ║"
+  echo "  ╚════════════════════════════════════════════════════════════════╝"
   echo -e "${NC}"
 
   echo -e "  ${YELLOW}${BOLD}  Required: Enable the logs-cloudprem feature flag${NC}"
