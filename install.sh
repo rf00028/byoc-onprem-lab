@@ -325,7 +325,8 @@ pick_instance() {
     printf "  ${WHITE}%-40s${NC}: ${DIM}%s (env)${NC}\n" "Select $role instance" "$preset"
     return
   fi
-  ask "Select $role instance number (or type instance ID directly)" "" choice
+  echo -e "  ${YELLOW}  Tip: type the instance ID directly (i-...) to avoid picking the wrong number.${NC}"
+  ask "Select $role instance number (or paste instance ID)" "" choice
   if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 && "$choice" -le "${#ids[@]}" ]]; then
     printf -v "$varname" '%s' "${ids[$((choice-1))]}"
   else
