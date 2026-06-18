@@ -126,7 +126,7 @@ ask() {
   else
     printf "  ${WHITE}%-40s${NC}: " "$prompt"
   fi
-  read -r resp < /dev/tty
+  read -re resp < /dev/tty
   [[ -z "$resp" ]] && resp="$default"
   printf -v "$varname" '%s' "$resp"
 }
@@ -142,7 +142,7 @@ ask_secret() {
     return
   fi
   printf "  ${WHITE}%-40s${NC}: " "$prompt"
-  stty -echo 2>/dev/null; read -r resp < /dev/tty; stty echo 2>/dev/null
+  stty -echo 2>/dev/null; read -re resp < /dev/tty; stty echo 2>/dev/null
   echo ""
   printf -v "$varname" '%s' "$resp"
 }
