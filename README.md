@@ -9,19 +9,23 @@ A single interactive script that teaches you what it deploys as it deploys it. B
 ## Quick Start
 
 ```bash
+# 0. Configure your AWS profile (paste SSO export lines first)
+aws configure set aws_access_key_id     "$AWS_ACCESS_KEY_ID"     --profile byoc
+aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY" --profile byoc
+aws configure set aws_session_token     "$AWS_SESSION_TOKEN"     --profile byoc
+
+# 1. Launch EC2 instances and wait for SSM registration (~3 min)
 git clone https://github.com/rf00028/byoc-onprem-lab
 cd byoc-onprem-lab
-
-# Step 1: launch EC2 instances and wait for SSM registration (~3 min)
 bash launch_instances.sh
 
-# Step 2: install the full BYOC stack (~15-20 min)
+# 2. Install the full BYOC stack (~15–20 min)
 bash install.sh
 ```
 
 `launch_instances.sh` creates both EC2 nodes, sets up the IAM instance profile, and waits until they're reachable via SSM. `install.sh` then discovers them automatically — just pick them from the numbered list.
 
-The script asks ~10 questions, then runs end-to-end with live progress, parallel installs, and a checkpoint system that resumes from where it left off if interrupted.
+The script asks ~8 questions, press **Enter once** to confirm, then runs fully automated end-to-end with live progress, parallel installs, and a checkpoint system that resumes from where it left off if interrupted.
 
 ---
 
@@ -76,9 +80,26 @@ The script asks ~10 questions, then runs end-to-end with live progress, parallel
 
 No `kubectl`, `helm`, or SSH needed locally. Everything runs remotely via AWS SSM SendCommand. The installer installs `helm`, `kubectl`, `kubeadm`, and `kubelet` on the remote Kubernetes node automatically.
 
-### AWS — launch instances with the launcher script
+### AWS credentials
 
-Use `launch_instances.sh` to create both EC2 instances in one step:
+This lab uses the `byoc` AWS CLI profile. Before running either script, configure it with your current SSO credentials:
+
+```bash
+# Get credentials from your AWS SSO portal (the "Export" button gives you 3 export lines)
+# Paste those first, then run:
+aws configure set aws_access_key_id     "$AWS_ACCESS_KEY_ID"     --profile byoc
+aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY" --profile byoc
+aws configure set aws_session_token     "$AWS_SESSION_TOKEN"     --profile byoc
+
+# Verify
+aws sts get-caller-identity --profile byoc
+```
+
+> **Note:** SSO tokens expire every ~1 hour. The installer detects this and pauses to let you refresh. Run the same four commands above to resume.
+
+Your local AWS profile needs: `AmazonSSMFullAccess` + `AmazonEC2ReadOnlyAccess` + `IAMFullAccess` (for instance profile creation).
+
+### AWS — launch instances with the launcher script
 
 ```bash
 bash launch_instances.sh
@@ -90,7 +111,8 @@ The script:
 3. Creates (or reuses) an IAM instance profile with `AmazonSSMManagedInstanceCore`
 4. Launches the Kubernetes node (`m5.4xlarge`, 300 GB gp3)
 5. Launches the PostgreSQL node (`t3.micro`, 20 GB gp2)
-6. Waits until both appear `Online` in SSM, then prints the instance IDs
+6. Tags both instances with `Project=byoc-cloudprem-lab` and `CreatedBy=<your-email>`
+7. Waits until both appear `Online` in SSM, then prints the instance IDs
 
 Once it finishes, run `bash install.sh` and select the two instances it discovered.
 
@@ -107,8 +129,6 @@ bash launch_instances.sh
 | Kubernetes node | `m5.4xlarge` | 300 GB gp3 | Override with `BYOC_K8S_TYPE` |
 | PostgreSQL node | `t3.micro` | 20 GB gp2 | Override with `BYOC_PG_TYPE` |
 
-Your local AWS profile needs: `AmazonSSMFullAccess` + `AmazonEC2ReadOnlyAccess` + `IAMFullAccess` (for instance profile creation)
-
 ### Datadog
 - Org with `logs-cloudprem` feature flag enabled → [mosaic.us1.ddbuild.io/feature-flags/logs-cloudprem](https://mosaic.us1.ddbuild.io/feature-flags/logs-cloudprem)
 - A Datadog API key (not an app key)
@@ -117,7 +137,7 @@ Your local AWS profile needs: `AmazonSSMFullAccess` + `AmazonEC2ReadOnlyAccess` 
 
 ## How It Works
 
-The installer runs six sequential phases, with Phases 3 and 4 executing **in parallel** for speed:
+The installer runs seven sequential phases, with Phases 3 and 4 executing **in parallel** for speed:
 
 ```
 Phase 1  Kubernetes bootstrap     kubeadm init, containerd, remove control-plane taint
@@ -126,16 +146,21 @@ Phase 3  Storage layer    ┐       local-path-provisioner + SeaweedFS + bucket/
 Phase 4  PostgreSQL       ┘ parallel on separate instance
 Phase 5  CloudPrem               helm install, all pods to Ready
 Phase 6  Datadog Agent            Operator + DatadogAgent CRD, log collection active
+Phase 7  Verify connection        polls control-plane logs until reverse WebSocket is live
 ```
 
 ### Smart features
 
-- **Instance discovery** — lists your online SSM instances, pick by number
-- **Checkpoint/resume** — completed phases are skipped on re-run, safe to retry after failure; keyed to the Kubernetes instance ID so separate instances don't share state
+- **Instance discovery** — lists your online SSM instances, pick by number or paste the ID
+- **Checkpoint/resume** — completed phases are skipped on re-run; keyed to the Kubernetes instance ID so separate instances don't share state
 - **Parallel execution** — PostgreSQL installs on the t3.micro while SeaweedFS deploys on the k8s node; saves ~3 minutes
+- **Unique cluster name** — auto-appends a random 6-char hex suffix (e.g. `cloudprem-a3f91c`) to prevent naming collisions across runs on the same Datadog org
+- **Idempotent secrets** — all Kubernetes secrets are recreated before Phase 5 on every run, so a resumed install never fails due to missing credentials
+- **Taint guard** — checks and removes the `control-plane:NoSchedule` taint before Phase 5 so pods always schedule, even on resumed runs
 - **Live spinner** — animated progress on every remote operation
-- **Credential refresh** — detects expired STS tokens and pauses for you to paste fresh credentials
+- **Credential refresh** — detects expired STS tokens and pauses for you to refresh
 - **Architecture diagram** — each phase shows the full stack with the current component highlighted
+- **Connection verification** — Phase 7 tails the control-plane logs and confirms the reverse WebSocket is live before showing the finish screen
 
 ### Non-interactive mode (`BYOC_YES=1`)
 
@@ -143,17 +168,17 @@ For automated testing or scripted deployments, set `BYOC_YES=1` and provide valu
 
 ```bash
 export BYOC_YES=1
-export BYOC_PROFILE=byoc           # default: byoc
-export BYOC_REGION=us-east-1       # default: us-east-1
-export BYOC_K8S_INSTANCE=i-0abc123...   # required — no default
-export BYOC_PG_INSTANCE=i-0def456...    # required — no default
-export BYOC_DD_SITE=datadoghq.com  # default: datadoghq.com
-export BYOC_CLUSTER_NAME=cloudprem # default: cloudprem
-export BYOC_NAMESPACE=byoclogs     # default: byoclogs
-export BYOC_BUCKET=byoclogs        # default: byoclogs
-export BYOC_PG_USER=byoclogs       # default: byoclogs
-export BYOC_PG_PASS=byoclogs       # default: byoclogs
-export BYOC_DD_API_KEY=<your-api-key>   # required — no default
+export BYOC_PROFILE=byoc                    # default: byoc
+export BYOC_REGION=us-east-1               # default: us-east-1
+export BYOC_K8S_INSTANCE=i-0abc123...      # required — no default
+export BYOC_PG_INSTANCE=i-0def456...       # required — no default
+export BYOC_DD_SITE=datadoghq.com          # default: datadoghq.com
+export BYOC_CLUSTER_NAME=cloudprem-abc123  # default: cloudprem-<random6hex>
+export BYOC_NAMESPACE=byoclogs             # default: byoclogs
+export BYOC_BUCKET=byoclogs               # default: byoclogs
+export BYOC_PG_USER=byoclogs              # default: byoclogs
+export BYOC_PG_PASS=byoclogs              # default: byoclogs
+export BYOC_DD_API_KEY=<your-api-key>     # required — no default
 bash install.sh
 ```
 
@@ -179,7 +204,9 @@ This installer fixes issues discovered during full verbatim validation. See [doc
 
 ## Verification
 
-After the script completes, the finish screen shows the correct URLs for your `DD_SITE`. For `datadoghq.com`:
+Phase 7 handles this automatically — the installer polls the control-plane pod logs and prints a confirmation line when the reverse WebSocket connection is established. The finish screen then shows your exact cluster name and URL.
+
+For `datadoghq.com`:
 
 1. **[app.datadoghq.com/byoc-logs](https://app.datadoghq.com/byoc-logs)** — cluster appears as `Connected`, type `Reverse`
 2. Hover cluster → **Search Logs** — pod logs appear within ~2 minutes
@@ -193,13 +220,26 @@ After the script completes, the finish screen shows the correct URLs for your `D
 
 **AWS STS token expired**
 ```bash
-# After pasting fresh export lines from the SSO portal:
+# Paste fresh export lines from the SSO portal, then:
 aws configure set aws_access_key_id     "$AWS_ACCESS_KEY_ID"     --profile byoc
 aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY" --profile byoc
 aws configure set aws_session_token     "$AWS_SESSION_TOKEN"     --profile byoc
 aws sts get-caller-identity --profile byoc
 ```
-The script detects this and pauses automatically, but if you're running commands manually, tokens expire every ~1 hour.
+The script detects this automatically and pauses, but tokens expire every ~1 hour so you may need to refresh mid-run.
+
+**Cluster not appearing in `app.datadoghq.com/byoc-logs`**
+
+The most common cause is the `logs-cloudprem` feature flag not being enabled on your org. The reverse connection silently does nothing until it is.
+
+```
+# Check the control-plane pod logs directly:
+# (run via SSM or on the k8s instance)
+export KUBECONFIG=/root/.kube/config
+kubectl logs -n byoclogs -l app.kubernetes.io/component=control-plane --tail=50
+```
+
+If logs show `connected` or `established` but the cluster still doesn't appear — the feature flag is the issue.
 
 **Metastore CrashLoopBackOff**
 ```bash
@@ -225,14 +265,19 @@ kubectl get pods -n kube-system | grep cilium
 ## Cleanup
 
 ```bash
-# On the Kubernetes instance
-export KUBECONFIG=/root/.kube/config
-helm uninstall byoclogs -n byoclogs
-helm uninstall datadog-operator -n byoclogs
-helm uninstall seaweedfs -n seaweedfs
-kubectl delete ns byoclogs seaweedfs
+# Terminate both EC2 instances (replace with your actual instance IDs)
+aws ec2 terminate-instances \
+  --instance-ids <k8s-instance-id> <postgres-instance-id> \
+  --region us-east-1 --profile byoc
+```
 
-# Terminate both EC2 instances from the AWS console
+To find your instance IDs if you've lost them:
+```bash
+aws ec2 describe-instances \
+  --filters "Name=tag:Project,Values=byoc-cloudprem-lab" \
+            "Name=tag:CreatedBy,Values=$(aws sts get-caller-identity --profile byoc --query 'Arn' --output text | sed 's/.*\///')" \
+  --query 'Reservations[*].Instances[*].[InstanceId,Tags[?Key==`Name`]|[0].Value,State.Name]' \
+  --output table --region us-east-1 --profile byoc
 ```
 
 ---
