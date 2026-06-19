@@ -370,6 +370,19 @@ pick_instance() {
   fi
 }
 
+validate_instance() {
+  local instance="$1" role="$2"
+  [[ "$instance" =~ ^i-[0-9a-f]+$ ]] \
+    || abort "${role} instance ID '${instance}' is not valid (expected i-xxxxxxxxxx). Check the ID and try again."
+  local status
+  status=$(aws ssm describe-instance-information \
+    --filters "Key=InstanceIds,Values=${instance}" \
+    --query "InstanceInformationList[0].PingStatus" \
+    --output text --region "$REGION" --profile "$PROFILE" 2>/dev/null)
+  [[ "$status" == "Online" ]] \
+    || abort "${role} instance ${instance} is not Online in SSM (got: '${status:-not found}').\n  Check: correct instance ID, region is ${REGION}, SSM agent is running, IAM profile has AmazonSSMManagedInstanceCore."
+}
+
 # ── Config Summary Card ───────────────────────────────────────────────────────
 print_config() {
   echo ""
@@ -771,7 +784,18 @@ if [[ -f "$CKPT_DIR/config.env" ]]; then
 else
   pick_instance "PostgreSQL node" PG_INSTANCE
 
+  echo ""
+  info "Verifying both instances are online in SSM..."
+  validate_instance "$K8S_INSTANCE" "Kubernetes"
+  validate_instance "$PG_INSTANCE"  "PostgreSQL"
+  success "Both instances reachable."
+  echo ""
+
   ask "Datadog site"                            "datadoghq.com" DD_SITE
+  case "$DD_SITE" in
+    datadoghq.com|datadoghq.eu|us3.datadoghq.com|us5.datadoghq.com|ap1.datadoghq.com|ddog-gov.com) ;;
+    *) warn "Unrecognized Datadog site '${DD_SITE}' — double-check before continuing." ;;
+  esac
   echo ""
   local deploy_id
   deploy_id=$(LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 6)
@@ -785,6 +809,9 @@ else
   ask "PostgreSQL database / user"              "byoclogs"      PG_USER
   ask "PostgreSQL password"                     "byoclogs"      PG_PASS
   ask_secret "Datadog API key"                                  DD_API_KEY
+  DD_API_KEY=$(echo -n "${DD_API_KEY}" | tr -dc '0-9a-fA-F')
+  [[ ${#DD_API_KEY} -eq 32 ]] \
+    || abort "Datadog API key must be exactly 32 hex characters (got ${#DD_API_KEY} after stripping non-hex chars). Check the key and try again."
 
   echo ""
   info "Resolving instance IPs..."
@@ -915,11 +942,23 @@ else
     spin_stop
     local_rc=$(cat "${PG_OUT}.rc" 2>/dev/null | tail -1)
     PG_ELAPSED=$((SECONDS - local_t0))
-    if [[ "$local_rc" != "0" ]]; then
-      echo -e "${DIM}$(cat "$PG_OUT")${NC}"
-      abort "PostgreSQL install failed."
+    if [[ -z "$local_rc" || "$local_rc" != "0" ]]; then
+      local pg_logfile="${CKPT_DIR}/error_byoc_p4_$(date +%H%M%S).log"
+      cp "$PG_OUT" "$pg_logfile" 2>/dev/null || true
+      if [[ -z "$local_rc" ]]; then
+        echo -e "\n  ${RED}${BOLD} ✗  PostgreSQL installer process died unexpectedly${NC}\n"
+      else
+        echo -e "\n  ${RED}${BOLD} ✗  PostgreSQL install failed (exit ${local_rc})${NC}\n"
+      fi
+      echo -e "${DIM}  Last output:${NC}"
+      tail -20 "$PG_OUT" | while IFS= read -r line; do
+        echo -e "  ${DIM}${line}${NC}"
+      done
+      echo -e "\n  ${DIM}Full log: ${pg_logfile}${NC}\n"
+      rm -f "$PG_OUT" "${PG_OUT}.rc"
+      printf "${SHOW_CURSOR}"
+      exit 1
     fi
-    echo -e "${DIM}$(cat "$PG_OUT")${NC}"
     ckpt_set "phase4"
     phase_done "PostgreSQL" "$PG_ELAPSED"
     rm -f "$PG_OUT" "${PG_OUT}.rc"
