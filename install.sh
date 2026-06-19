@@ -449,23 +449,17 @@ mkdir -p /root/.kube
 cp /etc/kubernetes/admin.conf /root/.kube/config
 sed -i "s|https://.*:6443|https://${K8S_IP}:6443|g" /root/.kube/config /etc/kubernetes/admin.conf
 echo "=== waiting for API server ==="
+API_READY=false
+for i in \$(seq 1 36); do
+  kubectl get nodes 2>/dev/null && API_READY=true && break
+  sleep 5
+done
+[[ "\$API_READY" == "false" ]] && { echo "ERROR: API server not ready after 180s" >&2; exit 1; }
+echo "=== removing control-plane taint (best-effort — Phase 5 taint guard is the safety net) ==="
 for i in \$(seq 1 24); do
-  kubectl get nodes 2>/dev/null && break
+  kubectl taint nodes --all node-role.kubernetes.io/control-plane- 2>/dev/null && break
   sleep 5
 done
-echo "=== removing control-plane taint ==="
-TAINT_REMOVED=false
-for i in \$(seq 1 20); do
-  if kubectl taint nodes --all node-role.kubernetes.io/control-plane- 2>/dev/null; then
-    TAINT_REMOVED=true
-    break
-  fi
-  sleep 5
-done
-if [[ "\$TAINT_REMOVED" == "false" ]]; then
-  echo "ERROR: failed to remove control-plane taint after 100s" >&2
-  exit 1
-fi
 kubectl get nodes
 REMOTE
 }
@@ -927,7 +921,13 @@ if ckpt_done "phase1"; then
 else
   write_phase1
   spin_start "Bootstrapping Kubernetes"
-  elapsed=$(ssm_run "$K8S_INSTANCE" /tmp/byoc_p1.sh)
+  elapsed=$(ssm_run "$K8S_INSTANCE" /tmp/byoc_p1.sh) || {
+    warn "Phase 1 hit a transient error — retrying once (kubeadm reset is safe to re-run)..."
+    sleep 5
+    write_phase1
+    spin_start "Bootstrapping Kubernetes (retry)"
+    elapsed=$(ssm_run "$K8S_INSTANCE" /tmp/byoc_p1.sh)
+  }
   ckpt_set "phase1"
   phase_done "Kubernetes bootstrap" "$elapsed"
 fi
