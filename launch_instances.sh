@@ -38,6 +38,10 @@ ACCOUNT_ID=$(aws sts get-caller-identity \
   --query "Account" --output text 2>/dev/null) \
   || abort "AWS credentials invalid or expired. Refresh them first:\n\n  aws configure set aws_access_key_id     \"\$AWS_ACCESS_KEY_ID\"     --profile ${PROFILE}\n  aws configure set aws_secret_access_key \"\$AWS_SECRET_ACCESS_KEY\" --profile ${PROFILE}\n  aws configure set aws_session_token     \"\$AWS_SESSION_TOKEN\"     --profile ${PROFILE}"
 success "Credentials OK (account: $ACCOUNT_ID)"
+CALLER_EMAIL=$(aws sts get-caller-identity \
+  --profile "$PROFILE" --region "$REGION" \
+  --query "Arn" --output text 2>/dev/null \
+  | sed 's/.*\///')   # extract session name (email for SSO, username otherwise)
 
 # ── 2. Find Ubuntu 22.04 AMI ──────────────────────────────────────────────────
 info "Finding latest Ubuntu 22.04 LTS AMI in $REGION..."
@@ -241,7 +245,7 @@ K8S_INSTANCE_ID=$(aws ec2 run-instances \
   --security-group-ids "$SG_ID" \
   --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${K8S_DISK},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]" \
   --metadata-options "HttpTokens=optional,HttpEndpoint=enabled" \
-  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=byoc-k8s},{Key=Project,Value=byoc-cloudprem-lab}]" \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=byoc-k8s},{Key=Project,Value=byoc-cloudprem-lab},{Key=CreatedBy,Value=${CALLER_EMAIL}}]" \
   --region "$REGION" --profile "$PROFILE" \
   --query "Instances[0].InstanceId" --output text) \
   || abort "Failed to launch Kubernetes node. Check instance type availability and quotas in $REGION.\nTo check quota: aws service-quotas get-service-quota --service-code ec2 --quota-code L-1216C47A --region $REGION --profile $PROFILE"
@@ -261,7 +265,7 @@ PG_INSTANCE_ID=$(aws ec2 run-instances \
   --security-group-ids "$SG_ID" \
   --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${PG_DISK},\"VolumeType\":\"gp2\",\"DeleteOnTermination\":true}}]" \
   --metadata-options "HttpTokens=optional,HttpEndpoint=enabled" \
-  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=byoc-postgres},{Key=Project,Value=byoc-cloudprem-lab}]" \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=byoc-postgres},{Key=Project,Value=byoc-cloudprem-lab},{Key=CreatedBy,Value=${CALLER_EMAIL}}]" \
   --region "$REGION" --profile "$PROFILE" \
   --query "Instances[0].InstanceId" --output text) \
   || abort "Failed to launch PostgreSQL node."

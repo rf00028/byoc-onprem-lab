@@ -361,8 +361,7 @@ pick_instance() {
     printf "  ${WHITE}%-40s${NC}: ${DIM}%s (env)${NC}\n" "Select $role instance" "$preset"
     return
   fi
-  echo -e "  ${YELLOW}  Paste the instance ID (i-...) directly — don't rely on the number, the list order changes.${NC}"
-  ask "Select $role instance" "${last_id}" choice
+  ask "Select $role instance (number or i-...)" "${last_id}" choice
   if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 && "$choice" -le "${#ids[@]}" ]]; then
     printf -v "$varname" '%s' "${ids[$((choice-1))]}"
   else
@@ -919,7 +918,6 @@ fi
 
 echo ""
 echo -e "  ${GREEN}Node is up. Cilium will bring it to Ready state.${NC}"
-pause
 
 # ── Phase 2: Cilium ───────────────────────────────────────────────────────────
 section "Phase 2 — Cilium CNI" "②"
@@ -944,7 +942,6 @@ fi
 
 echo ""
 echo -e "  ${GREEN}Node is Ready. Next: storage layer + PostgreSQL (parallel, ~5 min).${NC}"
-pause
 
 # ── Phase 3+4 (parallel): Storage + PostgreSQL ────────────────────────────────
 section "Phase 3 — Storage  ·  Phase 4 — PostgreSQL  (parallel)" "③④"
@@ -1034,7 +1031,6 @@ echo ""
 echo -e "  ${GREEN}Storage and PostgreSQL ready. Next: CloudPrem helm install (~3 min).${NC}"
 echo -e "  ${DIM}  SeaweedFS S3 endpoint:  seaweedfs-s3.seaweedfs.svc.cluster.local:8333${NC}"
 echo -e "  ${DIM}  PostgreSQL metastore:   ${PG_IP}:5432/${PG_USER}${NC}"
-pause
 
 # ── Phase 5: CloudPrem ────────────────────────────────────────────────────────
 section "Phase 5 — CloudPrem" "⑤"
