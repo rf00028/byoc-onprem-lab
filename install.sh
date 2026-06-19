@@ -572,7 +572,26 @@ kubectl delete secret byoc-logs-metastore-uri -n ${NAMESPACE} 2>/dev/null || tru
 kubectl create secret generic byoc-logs-metastore-uri \
   --from-literal QW_METASTORE_URI="postgres://${PG_USER}:${PG_PASS}@${PG_IP}:5432/${PG_USER}?sslmode=disable" \
   -n ${NAMESPACE}
-echo "Metastore URI secret created."
+kubectl delete secret byoc-logs-minio-credentials -n ${NAMESPACE} 2>/dev/null || true
+kubectl create secret generic byoc-logs-minio-credentials \
+  --from-literal AWS_ACCESS_KEY_ID="${S3_KEY}" \
+  --from-literal AWS_SECRET_ACCESS_KEY="${S3_SECRET}" \
+  -n ${NAMESPACE}
+echo "Secrets created."
+REMOTE
+}
+
+write_taint_guard() { cat > /tmp/byoc_taint.sh << REMOTE
+#!/bin/bash
+export KUBECONFIG=/root/.kube/config
+if kubectl get nodes -o jsonpath='{.items[*].spec.taints[*].key}' 2>/dev/null \
+    | grep -q 'node-role.kubernetes.io/control-plane'; then
+  kubectl taint nodes --all node-role.kubernetes.io/control-plane- 2>/dev/null || true
+  echo "Taint removed."
+else
+  echo "No control-plane taint present."
+fi
+echo "TAINT_OK"
 REMOTE
 }
 
@@ -1007,8 +1026,8 @@ fi
 # Always ensure metastore URI secret is current before Phase 5 (idempotent)
 if ! ckpt_done "phase5"; then
   write_phase4b
-  spin_start "Creating metastore URI secret"
-  ssm_run "$K8S_INSTANCE" /tmp/byoc_p4b.sh "Metastore URI secret created" > /dev/null
+  spin_start "Ensuring k8s secrets are current"
+  ssm_run "$K8S_INSTANCE" /tmp/byoc_p4b.sh "Secrets created" > /dev/null
 fi
 
 echo ""
@@ -1034,6 +1053,11 @@ initiates the connection outbound to app.datadoghq.com."
 if ckpt_done "phase5"; then
   success "Phase 5 already completed — skipping."
 else
+  # Remove the control-plane taint — it can persist across checkpoint boundaries
+  # and will leave all pods Pending indefinitely on a single-node cluster.
+  write_taint_guard
+  spin_start "Checking control-plane taint"
+  ssm_run "$K8S_INSTANCE" /tmp/byoc_taint.sh "TAINT_OK" > /dev/null
   write_phase5
   spin_start "Deploying CloudPrem (this takes ~3 minutes)"
   elapsed=$(ssm_run "$K8S_INSTANCE" /tmp/byoc_p5.sh)
