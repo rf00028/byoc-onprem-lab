@@ -625,6 +625,7 @@ config:
     s3:
       endpoint: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333
       force_path_style_access: true
+      region: us-east-1
 metastore:
   extraEnvFrom:
     - secretRef: {name: byoc-logs-metastore-uri}

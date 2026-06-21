@@ -192,6 +192,38 @@ kubectl patch daemonset longhorn-manager -n longhorn-system \
 
 ---
 
+## Deviation 10 — SeaweedFS S3 Requires Explicit Region (AWS SDK v2)
+
+**Article says:** S3 storage config with endpoint and `force_path_style_access: true` is sufficient.
+
+**What happened:** The CloudPrem indexer's uploader process failed silently on every split upload with:
+
+```
+A region must be set when sending requests to S3
+```
+
+Splits were indexed in the metastore but the object data was never written to SeaweedFS. Search queries returned empty results. The error only appeared in the indexer uploader thread logs (`kubectl logs ... | grep -A5 uploader`), not in the pod's main log stream.
+
+**Root cause:** QuickWit's S3 client is built on AWS SDK v2. SDK v2 made `region` a required field even when connecting to a custom (non-AWS) S3-compatible endpoint. Setting `region: None` (the default) causes the SDK to abort before sending any request.
+
+**Fix:** Add `region: us-east-1` to the `config.storage.s3` block in the CloudPrem helm values:
+
+```yaml
+config:
+  default_index_root_uri: s3://byoclogs/indexes
+  storage:
+    s3:
+      endpoint: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333
+      force_path_style_access: true
+      region: us-east-1
+```
+
+The value of the region string is arbitrary for SeaweedFS — it ignores it — but AWS SDK v2 requires it to be non-empty.
+
+**Article update needed:** Add `region` to the S3 storage configuration example. Note that AWS SDK v2 requires this field even for non-AWS endpoints.
+
+---
+
 ## Summary Table
 
 | # | Article says | Problem | Fix |
@@ -205,3 +237,4 @@ kubectl patch daemonset longhorn-manager -n longhorn-system \
 | 7 | Add scram-sha-256 to pg_hba | Step missing; PG14 defaults to md5 | Add md5 entry; step documented |
 | 8 | (not mentioned) | Longhorn webhooks block PVC binding after uninstall | Delete configs + disable manager |
 | 9 | Use SSH | Port 22 blocked in sandbox | AWS SSM SendCommand |
+| 10 | S3 config without region | AWS SDK v2 requires `region` even for custom endpoints; splits silently fail to upload | Add `region: us-east-1` to helm values `config.storage.s3` |
