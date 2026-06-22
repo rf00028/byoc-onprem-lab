@@ -19,12 +19,19 @@ warn()    { echo -e "  ${YELLOW}⚠${NC}  $1"; }
 abort()   { echo -e "\n  ${RED}${BOLD}✗  $1${NC}\n"; exit 1; }
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
-PROFILE="${BYOC_PROFILE:-byoc}"
-REGION="${BYOC_REGION:-us-east-1}"
 K8S_TYPE="${BYOC_K8S_TYPE:-m5.4xlarge}"   # m5zn.metal requires dedicated tenancy
 PG_TYPE="${BYOC_PG_TYPE:-t3.micro}"
 K8S_DISK="${BYOC_K8S_DISK:-300}"
 PG_DISK="${BYOC_PG_DISK:-20}"
+
+if [ -z "$PROFILE" ]; then
+  echo "profile is $PROFILE"
+  PROFILE="${BYOC_PROFILE:-byoc}"
+fi
+
+if [ -z "$REGION" ]; then
+  REGION="${BYOC_REGION:-us-east-1}"
+fi
 
 echo ""
 echo -e "${WHITE}${BOLD}  BYOC CloudPrem — EC2 Instance Launcher${NC}"
