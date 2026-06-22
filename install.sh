@@ -468,15 +468,97 @@ export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
-# surface the exact line and command on any unexpected exit
-trap 'echo ""; echo "ERROR: phase1 failed at line \$LINENO — command: \$BASH_COMMAND" >&2; exit 1' ERR
+SECTION="init"
 
+# Rich error handler: prints what failed, then runs section-specific diagnostics
+err_handler() {
+  local rc=\$?
+  local line=\$1
+  local cmd=\$2
+  echo ""
+  echo "================================================================"
+  echo "  PHASE 1 FAILED"
+  echo "  Section  : \$SECTION"
+  echo "  Line     : \$line"
+  echo "  Command  : \$cmd"
+  echo "  Exit code: \$rc"
+  echo "================================================================"
+  echo ""
+  case "\$SECTION" in
+    "iptables flush")
+      echo "--- iptables filter table ---"
+      iptables -L -n --line-numbers 2>&1 | head -50 || true
+      echo "--- ip6tables filter table ---"
+      ip6tables -L -n --line-numbers 2>&1 | head -20 || true
+      echo "--- loaded kernel modules ---"
+      lsmod | grep -E 'ip_tables|ip6_tables|xt_|nf_' 2>&1 || true
+      ;;
+    "containerd install"|"containerd config"|"containerd start"|"containerd socket")
+      echo "--- containerd service status ---"
+      systemctl status containerd --no-pager -l 2>&1 || true
+      echo "--- journalctl containerd (last 40 lines) ---"
+      journalctl -u containerd --no-pager -n 40 2>&1 || true
+      echo "--- /etc/containerd/config.toml ---"
+      cat /etc/containerd/config.toml 2>/dev/null || echo "(file missing)"
+      ;;
+    "apt update"|"kubeadm package install")
+      echo "--- apt-get update output (verbose) ---"
+      apt-get update 2>&1 || true
+      echo "--- kubernetes sources.list entry ---"
+      cat /etc/apt/sources.list.d/kubernetes.list 2>/dev/null || echo "(file missing)"
+      echo "--- GPG keyring ---"
+      ls -la /etc/apt/keyrings/ 2>&1 || true
+      gpg --no-default-keyring \
+          --keyring /etc/apt/keyrings/kubernetes-apt-keyring.gpg \
+          --list-keys 2>&1 || echo "(keyring unreadable or missing)"
+      echo "--- apt-cache policy kubelet ---"
+      apt-cache policy kubelet 2>&1 || true
+      ;;
+    "GPG keyring")
+      echo "--- curl exit to stdout (key fetch test) ---"
+      curl -fsSL --max-time 10 https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | wc -c 2>&1 || echo "(curl failed — network issue?)"
+      echo "--- existing keyring files ---"
+      ls -la /etc/apt/keyrings/ 2>&1 || true
+      ;;
+    "kubeadm init")
+      echo "--- kubeadm init log (/tmp/kubeadm-init.log) ---"
+      cat /tmp/kubeadm-init.log 2>/dev/null || echo "(no init log)"
+      echo "--- kubeadm preflight errors ---"
+      kubeadm init phase preflight \
+        --control-plane-endpoint=${K8S_IP}:6443 \
+        --pod-network-cidr=10.0.0.0/16 \
+        --skip-phases=addon/kube-proxy \
+        --ignore-preflight-errors=NumCPU 2>&1 || true
+      echo "--- journalctl kubelet (last 50 lines) ---"
+      journalctl -u kubelet --no-pager -n 50 2>&1 || true
+      echo "--- iptables filter chains ---"
+      iptables -L -n 2>&1 | head -30 || true
+      ;;
+    "API server wait")
+      echo "--- kubectl get nodes ---"
+      kubectl get nodes 2>&1 || true
+      echo "--- kube-apiserver pod logs ---"
+      kubectl -n kube-system logs --tail=40 \
+        \$(kubectl -n kube-system get pod -l component=kube-apiserver -o name 2>/dev/null | head -1) 2>/dev/null || true
+      echo "--- journalctl kubelet (last 50 lines) ---"
+      journalctl -u kubelet --no-pager -n 50 2>&1 || true
+      ;;
+  esac
+  echo "================================================================"
+  exit \$rc
+}
+
+trap 'err_handler \$LINENO "\$BASH_COMMAND"' ERR
+
+SECTION="check existing cluster"
 echo "=== check existing cluster health ==="
 if KUBECONFIG=/root/.kube/config kubectl get nodes 2>/dev/null | grep -q " Ready"; then
   echo "Cluster already initialized and node is Ready — skipping reset and init"
   KUBECONFIG=/root/.kube/config kubectl get nodes
   exit 0
 fi
+
+SECTION="reset"
 echo "=== reset any existing cluster ==="
 kubeadm reset -f 2>/dev/null || true
 rm -rf /etc/kubernetes /root/.kube /var/lib/etcd /var/lib/kubelet /etc/cni /opt/cni 2>/dev/null || true
@@ -486,27 +568,36 @@ echo "=== killing any lingering kube/etcd processes ==="
 pkill -9 -f 'kube-apiserver|kube-controller|kube-scheduler|kubelet|etcd' 2>/dev/null || true
 sleep 2
 
+SECTION="iptables flush"
 echo "=== flushing stale iptables/IPVS rules from prior CNI runs ==="
 iptables -F && iptables -X && iptables -t nat -F && iptables -t nat -X \
-  && iptables -t mangle -F && iptables -t mangle -X || true
+  && iptables -t mangle -F && iptables -t mangle -X
 ip6tables -F && ip6tables -X && ip6tables -t nat -F && ip6tables -t nat -X \
   && ip6tables -t mangle -F && ip6tables -t mangle -X || true
-if ipvsadm -l &>/dev/null; then ipvsadm --clear || true; fi
+if ipvsadm -l &>/dev/null; then ipvsadm --clear; fi
 
+SECTION="containerd install"
 echo "=== containerd ==="
 apt-get update -qq
 apt-get install -y -qq apt-transport-https ca-certificates curl gpg containerd
+
+SECTION="containerd config"
 mkdir -p /etc/containerd
 containerd config default > /etc/containerd/config.toml
 sed -i 's/SystemdCgroup = true/SystemdCgroup = false/' /etc/containerd/config.toml
+
+SECTION="containerd start"
 systemctl restart containerd && systemctl enable containerd
+
+SECTION="containerd socket"
 echo "Waiting for containerd socket..."
 for i in \$(seq 1 15); do
   [ -S /run/containerd/containerd.sock ] && break
   sleep 2
 done
-[ -S /run/containerd/containerd.sock ] || { echo "ERROR: containerd socket never appeared" >&2; exit 1; }
+[ -S /run/containerd/containerd.sock ] || { echo "ERROR: containerd socket never appeared after 30s" >&2; exit 1; }
 
+SECTION="kernel settings"
 echo "=== kernel settings ==="
 modprobe br_netfilter overlay
 cat > /etc/sysctl.d/99-k8s.conf << 'EOF'
@@ -516,17 +607,27 @@ net.ipv4.ip_forward=1
 EOF
 sysctl --system -q
 swapoff -a && sed -i '/swap/d' /etc/fstab
+
+SECTION="GPG keyring"
 echo "=== kubeadm ==="
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key \
   | gpg --batch --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /' \
   > /etc/apt/sources.list.d/kubernetes.list
+
+SECTION="apt update"
 apt-get update -qq
+
+SECTION="kubeadm package install"
 apt-get install -y -qq kubelet kubeadm kubectl
 apt-mark hold kubelet kubeadm kubectl
+
+SECTION="helm install"
 echo "=== helm ==="
 DESIRED_VERSION=v3.21.1 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+SECTION="kubeadm init"
 echo "=== kubeadm init ==="
 kubeadm init \
   --control-plane-endpoint=${K8S_IP}:6443 \
@@ -536,6 +637,8 @@ kubeadm init \
 mkdir -p /root/.kube
 cp /etc/kubernetes/admin.conf /root/.kube/config
 sed -i "s|https://.*:6443|https://${K8S_IP}:6443|g" /root/.kube/config /etc/kubernetes/admin.conf
+
+SECTION="API server wait"
 echo "=== waiting for API server ==="
 API_READY=false
 for i in \$(seq 1 36); do
