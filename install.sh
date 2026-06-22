@@ -275,12 +275,10 @@ ssm_run() {
     echo "$output" > "$logfile"
     # Detect the two most common failure modes and give targeted guidance
     if echo "$output" | grep -qi "ExpiredToken\|expired token\|AuthFailure\|InvalidClientTokenId"; then
-      echo -e "\n  ${RED}${BOLD} ✗  AWS credentials expired${NC}\n" >&2
-      echo -e "  ${YELLOW}Your STS token expired while the installer was running.${NC}" >&2
-      echo -e "  Refresh credentials, then re-run — completed phases will be skipped.\n" >&2
-      echo -e "  ${CYAN}  aws configure set aws_access_key_id     \"\$AWS_ACCESS_KEY_ID\"     --profile ${PROFILE}${NC}" >&2
-      echo -e "  ${CYAN}  aws configure set aws_secret_access_key \"\$AWS_SECRET_ACCESS_KEY\" --profile ${PROFILE}${NC}" >&2
-      echo -e "  ${CYAN}  aws configure set aws_session_token     \"\$AWS_SESSION_TOKEN\"     --profile ${PROFILE}${NC}" >&2
+      echo -e "\n  ${RED}${BOLD} ✗  AWS SSO session expired${NC}\n" >&2
+      echo -e "  ${YELLOW}Your SSO session expired while the installer was running.${NC}" >&2
+      echo -e "  Re-authenticate, then re-run — completed phases will be skipped.\n" >&2
+      echo -e "  ${CYAN}  aws sso login --profile ${PROFILE}${NC}" >&2
     elif echo "$output" | grep -qi "InvalidInstanceId\|not.*registered\|TargetNotConnected"; then
       echo -e "\n  ${RED}${BOLD} ✗  Instance not reachable via SSM${NC}\n" >&2
       echo -e "  ${YELLOW}The instance is not registered with SSM yet (can take 3-5 min after launch).${NC}" >&2
@@ -313,21 +311,14 @@ validate_creds() {
     > /dev/null 2>&1 && return 0
 
   echo ""
-  warn "AWS credentials expired."
+  warn "AWS SSO session expired — re-authenticating..."
   echo ""
-  echo -e "  In a ${WHITE}separate terminal window${NC}, run:"
-  echo -e "  ${CYAN}  aws configure set aws_access_key_id     \"\$AWS_ACCESS_KEY_ID\"     --profile ${PROFILE}${NC}"
-  echo -e "  ${CYAN}  aws configure set aws_secret_access_key \"\$AWS_SECRET_ACCESS_KEY\" --profile ${PROFILE}${NC}"
-  echo -e "  ${CYAN}  aws configure set aws_session_token     \"\$AWS_SESSION_TOKEN\"     --profile ${PROFILE}${NC}"
+  aws sso login --profile "$PROFILE" \
+    || abort "SSO login failed. Re-run after authenticating: aws sso login --profile ${PROFILE}"
   echo ""
-  echo -e "  Get fresh credentials from the ${WHITE}AWS SSO portal${NC} first (export the 3 lines),"
-  echo -e "  then run the aws configure set commands above, then come back here."
-  echo ""
-  echo -e -n "  ${YELLOW}Press ${WHITE}[Enter]${YELLOW} once credentials are refreshed...${NC}"
-  read -r < /dev/tty
   aws sts get-caller-identity --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1 \
-    || abort "Credentials still invalid. Re-run the installer after refreshing."
-  success "Credentials refreshed."
+    || abort "Still not authenticated. Run: aws sso login --profile ${PROFILE}"
+  success "SSO session refreshed."
 }
 
 get_private_ip() {

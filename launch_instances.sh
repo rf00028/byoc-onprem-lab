@@ -36,7 +36,7 @@ info "Checking AWS credentials (profile: $PROFILE, region: $REGION)..."
 ACCOUNT_ID=$(aws sts get-caller-identity \
   --profile "$PROFILE" --region "$REGION" \
   --query "Account" --output text 2>/dev/null) \
-  || abort "AWS credentials invalid or expired. Refresh them first:\n\n  aws configure set aws_access_key_id     \"\$AWS_ACCESS_KEY_ID\"     --profile ${PROFILE}\n  aws configure set aws_secret_access_key \"\$AWS_SECRET_ACCESS_KEY\" --profile ${PROFILE}\n  aws configure set aws_session_token     \"\$AWS_SESSION_TOKEN\"     --profile ${PROFILE}"
+  || abort "AWS SSO session expired or invalid. Re-authenticate first:\n\n  aws sso login --profile ${PROFILE}"
 success "Credentials OK (account: $ACCOUNT_ID)"
 CALLER_EMAIL=$(aws sts get-caller-identity \
   --profile "$PROFILE" --region "$REGION" \
