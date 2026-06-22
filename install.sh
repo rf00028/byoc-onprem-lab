@@ -1010,15 +1010,25 @@ pause
 
 # ── Phase 1: Kubernetes ───────────────────────────────────────────────────────
 section "Phase 1 — Kubernetes (kubeadm)" "①"
-explain "kubeadm bootstraps a production-grade Kubernetes cluster:
-containerd (CRI) → kubelet → kubeadm init → TLS PKI
-We use the PRIVATE IP for --control-plane-endpoint so the
-kubeconfig works from inside the instance via SSM without
-hairpin NAT. The control-plane taint is removed so pods
-can schedule on this single node.
+explain "🚀 Welcome to Phase 1 — the foundation of everything!
 
-Phase 1 is idempotent: it runs 'kubeadm reset -f' first,
-so re-running from a fresh checkpoint is safe."
+Kubernetes is the operating system for your CloudPrem cluster.
+kubeadm bootstraps a production-grade cluster in minutes:
+  containerd  Container Runtime Interface (CRI)
+  kubelet     Node agent — starts/stops pods, mounts volumes
+  kubeadm     Generates TLS PKI, kubeconfig, etcd, API server
+
+WHY PRIVATE IP?  We set --control-plane-endpoint to the EC2's
+PRIVATE IP so the kubeconfig works inside the instance. SSM
+runs inside — no hairpin NAT, no floating EIP needed.
+
+WHY REMOVE THE TAINT?  By default, kubeadm marks the control-
+plane node NoSchedule so workloads don't land on it. On a
+single-node lab, that would leave every CloudPrem pod Pending
+forever. We remove the taint — that's it, fully schedulable.
+
+This phase is idempotent: 'kubeadm reset -f' runs first,
+so resuming from a checkpoint is always safe. ✓"
 
 if ckpt_done "phase1"; then
   success "Phase 1 already completed — skipping."
@@ -1036,13 +1046,28 @@ echo -e "  ${GREEN}Node is up. Cilium will bring it to Ready state.${NC}"
 # ── Phase 2: Cilium ───────────────────────────────────────────────────────────
 section "Phase 2 — Cilium CNI" "②"
 arch_diagram "cilium"
-explain "Cilium is an eBPF-based CNI — it programs the Linux kernel
-directly for pod networking, bypassing iptables overhead.
-On bare metal, the cluster service IP (10.96.0.1) is not
-reachable during Cilium's bootstrap phase. We pass
---set k8sServiceHost to point Cilium's init container
-directly at the API server's private IP. Without this,
-Cilium crashes in a bootstrap deadlock."
+explain "⚡ Phase 2 — the network fabric that makes pods talk!
+
+Cilium is an eBPF-based CNI (Container Network Interface).
+Instead of iptables, it injects programs directly into the
+Linux kernel's networking subsystem — faster, more secure,
+and fully observable with zero overhead.
+
+WHAT IS eBPF?  A way to run sandboxed programs in the kernel
+without patching kernel source or loading modules. Cilium uses
+it to implement pod networking, DNS, and kube-proxy — all at
+wire speed with per-flow visibility.
+
+THE BARE-METAL GOTCHA:  On cloud Kubernetes (EKS, GKE), the
+cluster service IP (10.96.0.1) is reachable during CNI boot.
+On bare metal, it's NOT — because Cilium itself provides it.
+Bootstrap deadlock. We break the cycle by passing:
+  --set k8sServiceHost=<private_ip>
+  --set k8sServicePort=6443
+This tells Cilium's init container to talk directly to the
+API server, bypassing the ClusterIP it hasn't created yet.
+
+Once this phase completes, the node flips to Ready. 🟢"
 
 if ckpt_done "phase2"; then
   success "Phase 2 already completed — skipping."
@@ -1060,21 +1085,31 @@ echo -e "  ${GREEN}Node is Ready. Next: storage layer + PostgreSQL (parallel, ~5
 # ── Phase 3+4 (parallel): Storage + PostgreSQL ────────────────────────────────
 section "Phase 3 — Storage  ·  Phase 4 — PostgreSQL  (parallel)" "③④"
 arch_diagram "storage"
-explain "Two independent phases running concurrently:
+explain "💾 Phases 3 + 4 — storage layer, running in PARALLEL!
 
-  Phase 3 — local-path-provisioner + SeaweedFS
-  local-path-provisioner creates PVCs as host directories.
-  SeaweedFS provides an S3-compatible API for CloudPrem to
-  store indexed log segments (Parquet splits). We replaced
-  Longhorn (deadlock bug on k8s 1.32+) and MinIO (archived).
+These two phases run concurrently to save ~3 minutes. Each
+targets a different EC2 instance, so there's zero contention.
 
-  Phase 4 — PostgreSQL 14 on t3.micro
-  CloudPrem's QuickWit engine tracks log segment metadata
-  (split catalog) in PostgreSQL. QuickWit defaults to SSL;
-  a bare-metal PostgreSQL has no certs, so we append
-  ?sslmode=disable to the connection URI.
+━━━ PHASE 3: Local Storage + SeaweedFS (on k8s node) ━━━
+  local-path-provisioner  Creates PVCs as host directories —
+                          no cloud provider needed, no Longhorn
+                          (which has a deadlock bug on k8s 1.32+)
 
-  Both run on separate EC2 instances — zero contention."
+  SeaweedFS  A self-hosted S3-compatible object store. CloudPrem
+             stores its indexed log data here as Parquet 'splits'
+             — the same format it would use with AWS S3, Azure Blob,
+             Ceph, or NetApp in production. SeaweedFS replaced MinIO,
+             which was archived in 2024.
+
+━━━ PHASE 4: PostgreSQL 14 (on t3.micro) ━━━
+  Every log segment written by the indexer is registered in a
+  'split catalog' — a PostgreSQL table that tracks file path,
+  time range, tags, and merge history. Without it, the searcher
+  can't find anything. This is what we call the Metastore.
+
+  GOTCHA: QuickWit (the engine inside CloudPrem) expects SSL on
+  PostgreSQL by default. Our bare-metal instance has no certs.
+  We append ?sslmode=disable to the connection URI. Done. ✓"
 
 PG_OUT=$(mktemp /tmp/byoc_pg_out.XXXXXX)
 STORAGE_ELAPSED=0
@@ -1155,16 +1190,35 @@ echo ""
 # ── Phase 5: CloudPrem ────────────────────────────────────────────────────────
 section "Phase 5 — CloudPrem" "⑤"
 arch_diagram "cloudprem"
-explain "The CloudPrem helm chart deploys 5 components:
-  indexer       Ingests logs → writes Parquet splits to SeaweedFS
-  searcher      Executes queries against splits in SeaweedFS
-  metastore     Manages the split catalog in PostgreSQL
-  control-plane Orchestrates the cluster + reverse WebSocket to SaaS
-  janitor       Enforces retention policy, cleans expired splits
+explain "🎯 Phase 5 — THIS is the product! Welcome to CloudPrem!
 
-The reverse WebSocket is what allows Datadog SaaS to query
-your on-prem searcher without any public ingress — the cluster
-initiates the connection outbound to app.datadoghq.com."
+The CloudPrem helm chart deploys 5 microservices that form your
+complete on-premises log management engine:
+
+  indexer       The front door. Receives logs on port 7280,
+                batches them into Parquet 'splits', and writes
+                to SeaweedFS. High-throughput, append-only.
+
+  searcher      The query engine. When you search logs in the
+                Datadog UI, the query travels over the reverse
+                WebSocket to this service. It reads splits from
+                SeaweedFS, evaluates the query, and sends results
+                back. Logs NEVER leave your cluster.
+
+  metastore     The librarian. Registers every split written by
+                the indexer into the PostgreSQL catalog. Tells
+                the searcher where to find the right data.
+
+  control-plane The diplomat. Holds the persistent outbound
+                WebSocket connection to app.datadoghq.com — the
+                key innovation of CloudPrem. SaaS can query your
+                data without any inbound firewall rules. 🔑
+
+  janitor       The custodian. Enforces retention policy by
+                deleting expired splits from SeaweedFS and
+                removing their records from the catalog.
+
+Five services. One cluster. Zero log data leaving your network."
 
 if ckpt_done "phase5"; then
   success "Phase 5 already completed — skipping."
@@ -1184,19 +1238,31 @@ fi
 # ── Phase 6: Datadog Operator + Agent ─────────────────────────────────────────
 section "Phase 6 — Datadog Operator + Agent" "⑥"
 arch_diagram "agent"
-explain "The Datadog Operator manages Agent deployments declaratively.
-You define a DatadogAgent resource; the operator handles the
-DaemonSet, ClusterAgent, and RBAC lifecycle automatically.
+explain "🤖 Phase 6 — the Datadog Agent, pointed at YOUR indexer!
 
-Key config: DD_LOGS_CONFIG_LOGS_DD_URL redirects log shipping
-from app.datadoghq.com to the local CloudPrem indexer service
-(byoclogs-cloudprem-indexer.byoclogs.svc.cluster.local:7280).
-Log data never leaves your cluster — only metadata and query
-traffic traverse the reverse WebSocket to Datadog SaaS.
+The Datadog Operator manages Agent deployments declaratively
+using a 'DatadogAgent' CRD (Custom Resource Definition). You
+describe what you want; the operator handles the DaemonSet,
+ClusterAgent, RBAC, and lifecycle — no manual pod management.
 
-DD_LOGS_CONFIG_EXPECTED_TAGS_DURATION: 100000ms buffer ensures
-Kubernetes metadata tags (pod name, namespace, container) are
-fully resolved before logs are sent to the indexer."
+THE KEY OVERRIDE:  By default, the Agent ships logs to SaaS
+intake at app.datadoghq.com. We override that with:
+  DD_LOGS_CONFIG_LOGS_DD_URL = cloudprem-indexer:7280
+
+That one env var is what makes it CloudPrem. The Agent collects
+logs from all container CRI sockets on the node, ships them
+locally to the indexer — and the raw log bytes NEVER leave
+your cluster. Not a single byte.
+
+METADATA BUFFERING:  Kubernetes tags like pod_name, namespace,
+and container_name are resolved asynchronously. We set
+DD_LOGS_CONFIG_EXPECTED_TAGS_DURATION=100000ms so the Agent
+waits for full tag resolution before sending — clean, queryable
+logs with complete context from the first entry.
+
+CloudPrem metrics (index rates, query latency, storage) ARE
+sent to SaaS as regular metrics via DogStatsD — that's fine.
+Metadata goes to SaaS. Log data stays here. This is the line. ✓"
 
 if ckpt_done "phase6"; then
   success "Phase 6 already completed — skipping."
@@ -1210,13 +1276,30 @@ fi
 
 # ── Phase 7: Verify Reverse Connection ───────────────────────────────────────
 section "Phase 7 — Verifying Reverse Connection" "⑦"
-explain "The CloudPrem control-plane opens an outbound reverse WebSocket
-to app.${DD_SITE}. Once established, your cluster appears in
-the BYOC Logs UI as Connected (Reverse). This phase watches
-the control-plane pod logs until the connection is confirmed
-(up to 3 minutes) so you know exactly when to check the UI.
+explain "🔗 Phase 7 — the moment of truth. Let's see it connect!
 
-Expected cluster name: ${NAMESPACE}-${NAMESPACE}-${CLUSTER_NAME}"
+The CloudPrem control-plane opens an outbound WebSocket to:
+  app.${DD_SITE}  (port 443, HTTPS upgrade to wss://)
+
+This is the 'Reverse Connection' that gives BYOC its magic:
+  ✦ YOUR cluster dials OUT to Datadog SaaS
+  ✦ No inbound firewall rules required — ever
+  ✦ Works in air-gapped, private-subnet, and on-prem environments
+  ✦ The SaaS backend never initiates a connection to your network
+
+Once established, your cluster appears in the BYOC Logs UI as:
+  Status: Connected  ·  Type: Reverse
+
+This phase tails the control-plane pod logs and watches for
+the connection confirmation message — up to 5 minutes.
+
+  ★ Expected cluster name: ${NAMESPACE}-${NAMESPACE}-${CLUSTER_NAME}
+
+IMPORTANT: The 'logs-cloudprem' feature flag must be enabled
+on your Datadog org or the WebSocket will be rejected. If Phase
+7 times out, that flag is almost certainly the reason.
+
+Hang tight — this is the finish line! 🏁"
 
 write_phase7
 spin_start "Waiting for control-plane to connect to Datadog SaaS (~1-3 min)"

@@ -47,6 +47,64 @@ The script asks ~8 questions, press **Enter once** to confirm, then runs fully a
 
 ---
 
+## Architecture
+
+```
+╔══════════════════════════════════════════════════════════════════════════╗
+║                       DATADOG BYOC CLOUDPREM                            ║
+╠══════════════════════════════════════════════════════════════════════════╣
+║                                                                          ║
+║   Log Sources                                                            ║
+║   ┌──────────┐  ┌──────────┐  ┌──────────┐                              ║
+║   │ DC-1 App │  │ DC-2 App │  │ DC-3 App │  ...any shipper (Agent,      ║
+║   └────┬─────┘  └────┬─────┘  └────┬─────┘       Fluentd, HTTP)        ║
+║        └─────────────┴─────────────┘                                    ║
+║                             │  logs (HTTP :7280)                        ║
+║                             ▼                                            ║
+║   ┌──────────────────────────────────────────────────────────────────┐  ║
+║   │  Kubernetes Cluster                                              │  ║
+║   │                                                                  │  ║
+║   │   ┌─────────────────────────────────────────────────────────┐   │  ║
+║   │   │  BYOC Log Engine  (cloudprem Helm chart · byoclogs ns)  │   │  ║
+║   │   │                                                         │   │  ║
+║   │   │  ┌──────────┐  ┌──────────┐  ┌──────────┐              │   │  ║
+║   │   │  │ Indexer  │  │ Searcher │  │  Janitor │              │   │  ║
+║   │   │  │ (ingest) │  │ (query)  │  │(retention│              │   │  ║
+║   │   │  └────┬─────┘  └────┬─────┘  └──────────┘              │   │  ║
+║   │   │       │              │                                  │   │  ║
+║   │   │  ┌────▼──────┐  ┌───▼──────────────────────────────┐   │   │  ║
+║   │   │  │ Metastore │  │         Control Plane             │   │   │  ║
+║   │   │  │(split cat.)│  │  (reverse WebSocket to SaaS)  ───┼───┼──╬═══╗
+║   │   │  └─────┬─────┘  └───────────────────────────────┘   │   │  ║  ║
+║   │   └─────── │ ─────────────────────────────────────────── ┘   │  ║  ║
+║   │            │ SQL (:5432)                                      │  ║  ║
+║   │     ┌──────┴────────────┐   ┌──────────────────────────┐     │  ║  ║
+║   │     │  PostgreSQL 14    │   │  SeaweedFS (S3 :8333)    │     │  ║  ║
+║   │     │  Split Metastore  │   │  Log Splits (Parquet)    │     │  ║  ║
+║   │     │  (separate EC2)   │   │  s3://byoclogs/indexes   │     │  ║  ║
+║   │     └───────────────────┘   └──────────────────────────┘     │  ║  ║
+║   └──────────────────────────────────────────────────────────────┘  ║  ║
+║                                                                       ║  ║
+╚═══════════════════════════════════════════════════════════════════════╝  ║
+                              Outbound reverse WebSocket (wss://, port 443) ║
+                                                                            ▼
+                                                  ┌────────────────────────────────────┐
+                                                  │       Datadog SaaS                 │
+                                                  │   app.datadoghq.com                │
+                                                  │                                    │
+                                                  │  Log Search UI ─► reverse WS ──►  │
+                                                  │  query ──► searcher ──► results    │
+                                                  │                                    │
+                                                  │  Raw log bytes: NEVER cross this   │
+                                                  │  boundary. Only search queries     │
+                                                  │  and results travel the WebSocket. │
+                                                  └────────────────────────────────────┘
+```
+
+**The key insight:** The control plane dials *out* to Datadog SaaS — your cluster initiates the connection. No inbound firewall rules, no public ingress, no VPN. Works in any air-gapped or private-subnet environment as long as egress to `app.datadoghq.com:443` is allowed.
+
+---
+
 ## What It Deploys
 
 ```
@@ -446,6 +504,136 @@ aws ec2 describe-instances \
   --query 'Reservations[*].Instances[*].[InstanceId,Tags[?Key==`Name`]|[0].Value,State.Name]' \
   --output table --region $BYOC_REGION --profile $BYOC_PROFILE
 ```
+
+---
+
+## Post-Lab Quiz — BYOC CloudPrem 🎯
+
+*Ten questions for Bits of Learning. Take this after completing the lab — and prepare to ace your next customer conversation about CloudPrem!*
+
+---
+
+**Question 1**
+You're meeting a customer with strict data residency requirements. Their legal team says "no log data can leave our private network — ever." Which Datadog capability would you recommend, and why?
+
+- A) Standard Datadog Agent with log forwarding to SaaS  
+- B) BYOC CloudPrem — logs are stored, indexed, and searched entirely on-premises; only search queries cross the network boundary  
+- C) A third-party SIEM with Datadog forwarding  
+- D) Datadog Flex Logs — data stays in the customer's S3 bucket  
+
+✅ **Answer: B** — CloudPrem is purpose-built for data residency. Raw log bytes never leave the customer's infrastructure. The reverse WebSocket carries only search queries and results.
+
+---
+
+**Question 2**
+What is the "reverse connection" in BYOC CloudPrem, and why does it matter for customers who can't open inbound firewall ports?
+
+- A) The customer's SIEM pushes aggregated alerts to Datadog  
+- B) The Datadog Agent polls SaaS for configuration changes  
+- C) The CloudPrem control plane opens an *outbound* WebSocket to Datadog SaaS; the SaaS backend uses this same connection to send search queries down to the on-prem searcher  
+- D) A VPN tunnel that Datadog provisions into the customer's VPC  
+
+✅ **Answer: C** — The cluster dials out. No VPN, no inbound rules, no public ingress required. Any environment with egress to `app.datadoghq.com:443` can use CloudPrem.
+
+---
+
+**Question 3**
+A customer's CloudPrem cluster installs cleanly — all pods are Running, no errors — but their cluster never appears in the BYOC Logs UI. What is the most likely cause?
+
+- A) The Datadog Agent is misconfigured  
+- B) The `logs-cloudprem` feature flag is not enabled on their Datadog org  
+- C) SeaweedFS failed to initialize  
+- D) The PostgreSQL password is wrong  
+
+✅ **Answer: B** — This is the #1 footgun. Without the feature flag, the control plane's WebSocket handshake is silently rejected by SaaS. Everything looks healthy locally, but the cluster never appears in the UI.
+
+---
+
+**Question 4**
+CloudPrem's indexer stores log data as "Parquet splits" in an S3-compatible object store. A customer asks if they can use their existing NetApp storage instead of AWS S3. What do you tell them?
+
+- A) No — CloudPrem only works with native AWS S3  
+- B) Yes — any S3-compatible endpoint works, including NetApp StorageGRID, Ceph, Azure Blob via gateway, and on-prem object stores  
+- C) Only if they're running Kubernetes on AWS  
+- D) Yes, but only with an Enterprise license  
+
+✅ **Answer: B** — CloudPrem uses the S3 API, not AWS-specific features. Any S3-compatible store works. In this lab we use SeaweedFS to prove that flexibility.
+
+---
+
+**Question 5**
+What is the role of PostgreSQL in a BYOC CloudPrem deployment?
+
+- A) Stores raw log events for long-term retention  
+- B) Powers the Datadog dashboards that display log queries  
+- C) Stores the QuickWit split catalog — metadata about every indexed log segment (file path, time range, tags, merge history) — required by the searcher to locate the right data  
+- D) Caches search results for faster repeated queries  
+
+✅ **Answer: C** — PostgreSQL is the Metastore. Every time the indexer writes a Parquet split to object storage, it registers that split in PostgreSQL. Without the catalog, the searcher has no map of where the data lives.
+
+---
+
+**Question 6**
+A customer is concerned about Kubernetes expertise on their team. They've heard BYOC requires running their own cluster. How do you address this?
+
+- A) Tell them BYOC requires a dedicated Kubernetes team  
+- B) CloudPrem runs on any CNCF-conformant cluster — EKS, GKE, AKS, OpenShift, bare metal — deployed and managed however the customer prefers; Datadog doesn't require them to change their existing cluster strategy  
+- C) Suggest they use Datadog's managed Kubernetes offering  
+- D) BYOC only supports bare-metal deployments  
+
+✅ **Answer: B** — CloudPrem is a Helm chart. The customer owns and manages the cluster using whatever tools they already have. No new cluster model required.
+
+---
+
+**Question 7**
+In the lab, the Datadog Agent is configured with `DD_LOGS_CONFIG_LOGS_DD_URL` pointing at the local CloudPrem indexer instead of `app.datadoghq.com`. What does this single configuration change accomplish?
+
+- A) Disables log collection entirely  
+- B) Routes all log bytes to the on-prem indexer instead of SaaS intake — making the Agent a local log shipper while still sending metrics and traces to SaaS normally  
+- C) Encrypts logs before sending them to SaaS  
+- D) Enables log sampling  
+
+✅ **Answer: B** — One URL override is all it takes. Logs go locally; metrics and traces continue to SaaS. The Agent is unchanged in every other way.
+
+---
+
+**Question 8**
+Which CloudPrem component is responsible for enforcing log retention policies and cleaning up expired data?
+
+- A) Metastore  
+- B) Control Plane  
+- C) Searcher  
+- D) Janitor  
+
+✅ **Answer: D** — The Janitor runs on a schedule, deletes expired Parquet splits from object storage, and removes their records from the PostgreSQL split catalog. Retention is enforced entirely on-premises with no SaaS involvement.
+
+---
+
+**Question 9**
+A customer asks how Datadog's SaaS backend can execute search queries against data that lives entirely in the customer's private network. How does this work?
+
+- A) Datadog creates a secure VPN into the customer's environment for each query  
+- B) The customer copies query results to a Datadog-hosted S3 bucket  
+- C) The control plane holds an outbound WebSocket open at all times; SaaS sends search requests *down* this connection to the on-prem searcher, and results flow back the same way — no inbound connection is ever made  
+- D) The searcher periodically syncs indexed data to Datadog SaaS  
+
+✅ **Answer: C** — The persistent outbound WebSocket is the entire mechanism. The connection is already open before any query arrives. From a network perspective, every search query is a response to an existing outbound connection — no new inbound connection required.
+
+---
+
+**Question 10**
+What are the two primary use cases that drive customers to choose BYOC CloudPrem over standard Datadog log management?
+
+- A) Cost savings and faster query performance  
+- B) **Data residency / regulatory compliance** (logs must stay on-prem or in a specific region) AND **data sovereignty** (the customer owns and controls their log infrastructure, including what gets indexed and retained)  
+- C) Easier Kubernetes deployment and lower agent resource consumption  
+- D) Support for non-standard log formats and multi-cloud routing  
+
+✅ **Answer: B** — Data residency and sovereignty are the two headline drivers. Customers in regulated industries (finance, healthcare, government, defense) often cannot send log data outside their own infrastructure. CloudPrem gives them the full Datadog experience — search, dashboards, alerts, retention — while keeping every log byte on their own hardware.
+
+---
+
+*Nice work! If you aced this, you're ready to lead a CloudPrem conversation. If any answers surprised you, re-run the lab and pay attention to the Phase 5–7 explain screens — they cover all of this live. 🚀*
 
 ---
 
