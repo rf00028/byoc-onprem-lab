@@ -329,21 +329,6 @@ ssm_bg() {
 }
 
 # ── AWS Helpers ───────────────────────────────────────────────────────────────
-_sso_setup_hint() {
-  # Printed whenever the profile needs a full aws configure sso run
-  echo -e "  ${YELLOW}Run this command and enter the values below when prompted:${NC}"
-  echo ""
-  echo -e "  ${CYAN}${BOLD}  aws configure sso --profile ${PROFILE}${NC}"
-  echo ""
-  echo -e "  ${DIM}    SSO session name : ${PROFILE}${NC}"
-  echo -e "  ${DIM}    SSO start URL    : https://d-906757b57c.awsapps.com/start${NC}"
-  echo -e "  ${DIM}    SSO region       : us-east-1${NC}"
-  echo -e "  ${DIM}    (then choose your AWS account and role from the list)${NC}"
-  echo ""
-  echo -e "  ${DIM}  Then re-run the installer — completed phases will be skipped.${NC}"
-  echo ""
-}
-
 validate_creds() {
   aws sts get-caller-identity --profile "$PROFILE" --region "$REGION" \
     > /dev/null 2>&1 && return 0
@@ -357,42 +342,31 @@ validate_creds() {
   echo -e "  ${RED}${BOLD} ✗  AWS credentials not valid${NC}"
   echo ""
 
-  # Profile never fully set up (missing start URL, account, or role)
   if [[ -z "$sso_url" || -z "$sso_account" || -z "$sso_role" ]]; then
-    echo -e "  ${YELLOW}The '${PROFILE}' profile is not fully configured for SSO.${NC}"
-    echo -e "  ${YELLOW}Missing: ${NC}${DIM}${sso_url:-(sso_start_url)} ${sso_account:-(sso_account_id)} ${sso_role:-(sso_role_name)}${NC}"
+    # Profile incomplete — run aws configure sso inline right now, no need to re-run installer
+    echo -e "  ${YELLOW}The '${PROFILE}' profile needs SSO setup. Starting it now...${NC}"
     echo ""
-    _sso_setup_hint
-    abort "SSO profile '${PROFILE}' incomplete — run: aws configure sso --profile ${PROFILE}"
-  fi
-
-  # Profile is configured — session just expired, refresh it
-  echo -e "  ${YELLOW}Session expired. Logging in — approve the request in your browser, then return here.${NC}"
-  echo ""
-  echo -e "  ${CYAN}${BOLD}  aws sso login --profile ${PROFILE}${NC}"
-  echo ""
-  local login_out login_rc
-  login_out=$(aws sso login --profile "$PROFILE" 2>&1); login_rc=$?
-  echo "$login_out"
-  if [[ $login_rc -ne 0 ]]; then
+    echo -e "  ${DIM}  Enter these values when prompted:${NC}"
+    echo -e "  ${DIM}    SSO session name → ${PROFILE}${NC}"
+    echo -e "  ${DIM}    SSO start URL    → https://d-906757b57c.awsapps.com/start${NC}"
+    echo -e "  ${DIM}    SSO region       → us-east-1${NC}"
+    echo -e "  ${DIM}    (then pick your AWS account and role from the list)${NC}"
     echo ""
-    echo -e "  ${RED}${BOLD} ✗  Login failed — the profile may need to be reconfigured:${NC}"
+    aws configure sso --profile "$PROFILE" \
+      || abort "SSO setup failed. Run manually: aws configure sso --profile ${PROFILE}"
+  else
+    # Profile fully configured — session just expired
+    echo -e "  ${YELLOW}Session expired. Logging in — approve the request in your browser, then return here.${NC}"
     echo ""
-    _sso_setup_hint
-    abort "SSO login failed for profile '${PROFILE}'"
+    aws sso login --profile "$PROFILE" \
+      || abort "SSO login failed. Run: aws configure sso --profile ${PROFILE}"
   fi
 
   echo ""
-  # Give the CLI a moment to write the cached token
-  sleep 2
-  aws sts get-caller-identity --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1 || {
-    echo -e "  ${RED}${BOLD} ✗  Still not authenticated after login.${NC}"
-    echo -e "  ${YELLOW}The profile may need to be reconfigured:${NC}"
-    echo ""
-    _sso_setup_hint
-    abort "SSO login succeeded but credentials still invalid for profile '${PROFILE}'"
-  }
-  success "SSO session refreshed — resuming."
+  sleep 2  # let the CLI finish writing the cached token
+  aws sts get-caller-identity --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1 \
+    || abort "Still not authenticated. Run: aws configure sso --profile ${PROFILE}"
+  success "SSO session valid — resuming."
 }
 
 get_private_ip() {
