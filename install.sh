@@ -659,8 +659,61 @@ write_phase2() { cat > /tmp/byoc_p2.sh << REMOTE
 #!/bin/bash
 set -euo pipefail
 export KUBECONFIG=/root/.kube/config
+
+SECTION="init"
+
+err_handler() {
+  local rc=\$?
+  local line=\$1
+  local cmd=\$2
+  echo ""
+  echo "================================================================"
+  echo "  PHASE 2 FAILED"
+  echo "  Section  : \$SECTION"
+  echo "  Line     : \$line"
+  echo "  Command  : \$cmd"
+  echo "  Exit code: \$rc"
+  echo "================================================================"
+  echo ""
+  case "\$SECTION" in
+    "cilium helm repo")
+      echo "--- helm repo list ---"
+      helm repo list 2>&1 || true
+      echo "--- network connectivity test ---"
+      curl -fsSL --max-time 10 https://helm.cilium.io/index.yaml -o /dev/null && echo "helm.cilium.io reachable" || echo "helm.cilium.io unreachable"
+      ;;
+    "cilium install")
+      echo "--- helm status cilium ---"
+      helm status cilium -n kube-system 2>&1 || true
+      echo "--- all pods in kube-system ---"
+      kubectl get pods -n kube-system -o wide 2>&1 || true
+      echo "--- cilium pod logs (last 50 lines) ---"
+      kubectl logs -n kube-system -l k8s-app=cilium --tail=50 2>&1 || true
+      echo "--- cilium pod events ---"
+      kubectl describe pods -n kube-system -l k8s-app=cilium 2>&1 | grep -A 15 "Events:" | tail -30 || true
+      ;;
+    "node ready wait")
+      echo "--- kubectl get nodes -o wide ---"
+      kubectl get nodes -o wide 2>&1 || true
+      echo "--- cilium pod status ---"
+      kubectl get pods -n kube-system -l k8s-app=cilium -o wide 2>&1 || true
+      echo "--- cilium pod logs (last 50 lines) ---"
+      kubectl logs -n kube-system -l k8s-app=cilium --tail=50 2>&1 || true
+      echo "--- node conditions ---"
+      kubectl describe nodes 2>&1 | grep -A 10 "Conditions:" | head -40 || true
+      ;;
+  esac
+  echo "================================================================"
+  exit \$rc
+}
+
+trap 'err_handler \$LINENO "\$BASH_COMMAND"' ERR
+
+SECTION="cilium helm repo"
 echo "=== adding cilium helm repo ==="
 helm repo add cilium https://helm.cilium.io/ --force-update 2>/dev/null || helm repo update
+
+SECTION="cilium install"
 echo "=== installing cilium v1.17.4 ==="
 helm upgrade --install cilium cilium/cilium \
   --version 1.17.4 \
@@ -668,6 +721,8 @@ helm upgrade --install cilium cilium/cilium \
   --set k8sServiceHost=${K8S_IP} \
   --set k8sServicePort=6443 \
   --wait --timeout=10m
+
+SECTION="node ready wait"
 echo "=== waiting for node Ready ==="
 kubectl wait node --all --for=condition=Ready --timeout=600s
 kubectl get nodes
@@ -678,11 +733,77 @@ write_phase3() { cat > /tmp/byoc_p3.sh << REMOTE
 #!/bin/bash
 set -euo pipefail
 export KUBECONFIG=/root/.kube/config
+
+SECTION="init"
+
+err_handler() {
+  local rc=\$?
+  local line=\$1
+  local cmd=\$2
+  echo ""
+  echo "================================================================"
+  echo "  PHASE 3 FAILED"
+  echo "  Section  : \$SECTION"
+  echo "  Line     : \$line"
+  echo "  Command  : \$cmd"
+  echo "  Exit code: \$rc"
+  echo "================================================================"
+  echo ""
+  case "\$SECTION" in
+    "local-path-provisioner")
+      echo "--- pods in local-path-storage ---"
+      kubectl get pods -n local-path-storage -o wide 2>&1 || true
+      echo "--- storage classes ---"
+      kubectl get storageclass 2>&1 || true
+      echo "--- local-path-provisioner events ---"
+      kubectl get events -n local-path-storage --field-selector type=Warning 2>&1 | tail -20 || true
+      echo "--- describe provisioner pod ---"
+      kubectl describe pods -n local-path-storage 2>&1 | grep -A 15 "Events:" | tail -30 || true
+      ;;
+    "seaweedfs install"|"seaweedfs rollout")
+      echo "--- helm status seaweedfs ---"
+      helm status seaweedfs -n seaweedfs 2>&1 || true
+      echo "--- all pods in seaweedfs namespace ---"
+      kubectl get pods -n seaweedfs -o wide 2>&1 || true
+      echo "--- PVCs in seaweedfs ---"
+      kubectl get pvc -n seaweedfs 2>&1 || true
+      echo "--- warning events in seaweedfs ---"
+      kubectl get events -n seaweedfs --field-selector type=Warning 2>&1 | tail -20 || true
+      echo "--- describe failing pods ---"
+      for pod in \$(kubectl get pods -n seaweedfs --no-headers 2>/dev/null | awk '\$3!="Running" && \$3!="Completed"{print \$1}'); do
+        echo "  -- \$pod --"
+        kubectl describe pod "\$pod" -n seaweedfs 2>&1 | grep -A 15 "Events:" | tail -20 || true
+      done
+      ;;
+    "bucket and user")
+      echo "--- seaweedfs-master-0 readiness ---"
+      kubectl get pod seaweedfs-master-0 -n seaweedfs -o wide 2>&1 || true
+      echo "--- seaweedfs-master-0 logs (last 40 lines) ---"
+      kubectl logs seaweedfs-master-0 -n seaweedfs --tail=40 2>&1 || true
+      echo "--- weed shell connectivity test ---"
+      kubectl exec -n seaweedfs seaweedfs-master-0 -- weed shell -master=localhost:9333 -run="version" 2>&1 || true
+      ;;
+    "secrets")
+      echo "--- namespace status ---"
+      kubectl get ns ${NAMESPACE} 2>&1 || true
+      echo "--- existing secrets in ${NAMESPACE} ---"
+      kubectl get secrets -n ${NAMESPACE} 2>&1 || true
+      ;;
+  esac
+  echo "================================================================"
+  exit \$rc
+}
+
+trap 'err_handler \$LINENO "\$BASH_COMMAND"' ERR
+
+SECTION="local-path-provisioner"
 echo "=== local-path-provisioner ==="
 kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml
 kubectl patch storageclass local-path \
   -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
 kubectl -n local-path-storage rollout status deploy/local-path-provisioner --timeout=60s
+
+SECTION="seaweedfs install"
 echo "=== SeaweedFS ==="
 helm repo add seaweedfs https://seaweedfs.github.io/seaweedfs/helm --force-update 2>/dev/null || helm repo update
 cat > /tmp/swfs.yaml << 'EOF'
@@ -705,14 +826,20 @@ ingress: {enabled: false}
 EOF
 kubectl create ns seaweedfs 2>/dev/null || true
 helm upgrade --install seaweedfs seaweedfs/seaweedfs -f /tmp/swfs.yaml -n seaweedfs
+
+SECTION="seaweedfs rollout"
 kubectl rollout status statefulset/seaweedfs-master -n seaweedfs --timeout=600s
 kubectl rollout status statefulset/seaweedfs-filer  -n seaweedfs --timeout=600s
 kubectl rollout status statefulset/seaweedfs-volume -n seaweedfs --timeout=600s
+
+SECTION="bucket and user"
 echo "=== bucket + user ==="
 kubectl exec -n seaweedfs seaweedfs-master-0 -- sh -c "
   echo 's3.bucket.create -name ${BUCKET}' | weed shell -master=localhost:9333
   echo 's3.configure -access_key=${S3_KEY} -secret_key=${S3_SECRET} -user=${BUCKET} -actions=Read,Write,List,Tagging -buckets=${BUCKET} -apply' | weed shell -master=localhost:9333
 " 2>&1
+
+SECTION="secrets"
 kubectl create ns ${NAMESPACE} 2>/dev/null || true
 kubectl delete secret byoc-logs-minio-credentials -n ${NAMESPACE} 2>/dev/null || true
 kubectl create secret generic byoc-logs-minio-credentials \
@@ -729,13 +856,72 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
+
+SECTION="init"
+
+err_handler() {
+  local rc=\$?
+  local line=\$1
+  local cmd=\$2
+  echo ""
+  echo "================================================================"
+  echo "  PHASE 4 FAILED  (PostgreSQL node)"
+  echo "  Section  : \$SECTION"
+  echo "  Line     : \$line"
+  echo "  Command  : \$cmd"
+  echo "  Exit code: \$rc"
+  echo "================================================================"
+  echo ""
+  case "\$SECTION" in
+    "postgres install")
+      echo "--- apt-get update verbose ---"
+      apt-get update 2>&1 | tail -20 || true
+      echo "--- apt-cache policy postgresql-14 ---"
+      apt-cache policy postgresql-14 2>&1 || true
+      ;;
+    "postgres start")
+      echo "--- postgresql service status ---"
+      systemctl status postgresql --no-pager -l 2>&1 || true
+      echo "--- journalctl postgresql (last 40 lines) ---"
+      journalctl -u postgresql --no-pager -n 40 2>&1 || true
+      echo "--- pg_lsclusters ---"
+      pg_lsclusters 2>&1 || true
+      ;;
+    "postgres readiness"|"postgres user/db"|"pg_hba config"|"postgres restart")
+      echo "--- postgresql service status ---"
+      systemctl status postgresql --no-pager -l 2>&1 || true
+      echo "--- journalctl postgresql (last 40 lines) ---"
+      journalctl -u postgresql --no-pager -n 40 2>&1 || true
+      echo "--- pg_hba.conf ---"
+      find /etc/postgresql -name pg_hba.conf -exec cat {} \; 2>/dev/null || echo "(not found)"
+      echo "--- postgresql.conf listen_addresses ---"
+      find /etc/postgresql -name postgresql.conf -exec grep -H listen_addresses {} \; 2>/dev/null || echo "(not found)"
+      echo "--- pg_lsclusters ---"
+      pg_lsclusters 2>&1 || true
+      ;;
+  esac
+  echo "================================================================"
+  exit \$rc
+}
+
+trap 'err_handler \$LINENO "\$BASH_COMMAND"' ERR
+
+SECTION="postgres install"
 apt-get update -qq && apt-get install -y -qq postgresql-14
+
+SECTION="postgres start"
 systemctl enable postgresql && systemctl start postgresql
+
+SECTION="postgres readiness"
 sudo -u postgres psql -c "SELECT 1" > /dev/null 2>&1 || { echo "ERROR: PostgreSQL not accepting connections" >&2; exit 1; }
+
+SECTION="postgres user/db"
 sudo -u postgres psql -c "CREATE USER ${PG_USER} WITH ENCRYPTED PASSWORD '${PG_PASS}';" 2>/dev/null || true
 sudo -u postgres psql -c "CREATE DATABASE ${PG_USER};" 2>/dev/null || true
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${PG_USER} TO ${PG_USER};"
 sudo -u postgres psql -c "ALTER DATABASE ${PG_USER} OWNER TO ${PG_USER};"
+
+SECTION="pg_hba config"
 PG_CONF=\$(find /etc/postgresql -name postgresql.conf | head -1)
 PG_HBA=\$(find /etc/postgresql -name pg_hba.conf | head -1)
 sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/" "\$PG_CONF"
@@ -745,6 +931,8 @@ grep -q "172.16.0.0" "\$PG_HBA" || \
   echo "host  ${PG_USER}  ${PG_USER}  172.16.0.0/12  md5" >> "\$PG_HBA"
 grep -q "192.168.0.0" "\$PG_HBA" || \
   echo "host  ${PG_USER}  ${PG_USER}  192.168.0.0/16  md5" >> "\$PG_HBA"
+
+SECTION="postgres restart"
 systemctl restart postgresql
 for i in \$(seq 1 20); do
   systemctl is-active postgresql && break
@@ -757,12 +945,46 @@ REMOTE
 
 write_phase4b() { cat > /tmp/byoc_p4b.sh << REMOTE
 #!/bin/bash
+set -euo pipefail
 export KUBECONFIG=/root/.kube/config
+
+SECTION="init"
+
+err_handler() {
+  local rc=\$?
+  local line=\$1
+  local cmd=\$2
+  echo ""
+  echo "================================================================"
+  echo "  PHASE 4b FAILED  (k8s secrets)"
+  echo "  Section  : \$SECTION"
+  echo "  Line     : \$line"
+  echo "  Command  : \$cmd"
+  echo "  Exit code: \$rc"
+  echo "================================================================"
+  echo ""
+  echo "--- namespace status ---"
+  kubectl get ns ${NAMESPACE} 2>&1 || echo "namespace ${NAMESPACE} does not exist"
+  echo "--- existing secrets in ${NAMESPACE} ---"
+  kubectl get secrets -n ${NAMESPACE} 2>&1 || true
+  echo "--- kubectl api-server reachability ---"
+  kubectl cluster-info 2>&1 || true
+  echo "================================================================"
+  exit \$rc
+}
+
+trap 'err_handler \$LINENO "\$BASH_COMMAND"' ERR
+
+SECTION="namespace"
 kubectl create ns ${NAMESPACE} 2>/dev/null || true
+
+SECTION="metastore secret"
 kubectl delete secret byoc-logs-metastore-uri -n ${NAMESPACE} 2>/dev/null || true
 kubectl create secret generic byoc-logs-metastore-uri \
   --from-literal QW_METASTORE_URI="postgres://${PG_USER}:${PG_PASS}@${PG_IP}:5432/${PG_USER}?sslmode=disable" \
   -n ${NAMESPACE}
+
+SECTION="minio credentials secret"
 kubectl delete secret byoc-logs-minio-credentials -n ${NAMESPACE} 2>/dev/null || true
 kubectl create secret generic byoc-logs-minio-credentials \
   --from-literal AWS_ACCESS_KEY_ID="${S3_KEY}" \
@@ -790,6 +1012,71 @@ write_phase5() { cat > /tmp/byoc_p5.sh << REMOTE
 #!/bin/bash
 set -euo pipefail
 export KUBECONFIG=/root/.kube/config
+
+SECTION="init"
+
+err_handler() {
+  local rc=\$?
+  local line=\$1
+  local cmd=\$2
+  echo ""
+  echo "================================================================"
+  echo "  PHASE 5 FAILED  (CloudPrem)"
+  echo "  Section  : \$SECTION"
+  echo "  Line     : \$line"
+  echo "  Command  : \$cmd"
+  echo "  Exit code: \$rc"
+  echo "================================================================"
+  echo ""
+  case "\$SECTION" in
+    "API key validation")
+      echo "--- curl verbose to api.${DD_SITE} ---"
+      curl -v --max-time 15 \
+        -H "DD-API-KEY: \$DD_API_KEY_CLEAN" \
+        "https://api.${DD_SITE}/api/v1/validate" 2>&1 || true
+      ;;
+    "datadog secret"|"helm repo")
+      echo "--- existing secrets in ${NAMESPACE} ---"
+      kubectl get secrets -n ${NAMESPACE} 2>&1 || true
+      echo "--- helm repo list ---"
+      helm repo list 2>&1 || true
+      ;;
+    "cloudprem helm install")
+      echo "--- helm status ${NAMESPACE} ---"
+      helm status ${NAMESPACE} -n ${NAMESPACE} 2>&1 || true
+      echo "--- all pods in ${NAMESPACE} ---"
+      kubectl get pods -n ${NAMESPACE} -o wide 2>&1 || true
+      echo "--- PVCs in ${NAMESPACE} ---"
+      kubectl get pvc -n ${NAMESPACE} 2>&1 || true
+      echo "--- warning events in ${NAMESPACE} ---"
+      kubectl get events -n ${NAMESPACE} --field-selector type=Warning 2>&1 | tail -20 || true
+      ;;
+    "pod ready wait")
+      echo "--- all pods in ${NAMESPACE} ---"
+      kubectl get pods -n ${NAMESPACE} -o wide 2>&1 || true
+      echo "--- PVCs in ${NAMESPACE} ---"
+      kubectl get pvc -n ${NAMESPACE} 2>&1 || true
+      echo "--- warning events in ${NAMESPACE} ---"
+      kubectl get events -n ${NAMESPACE} --field-selector type=Warning 2>&1 | tail -30 || true
+      echo "--- describe non-Running pods ---"
+      for pod in \$(kubectl get pods -n ${NAMESPACE} --no-headers 2>/dev/null | awk '\$3!="Running" && \$3!="Completed"{print \$1}'); do
+        echo "  -- \$pod --"
+        kubectl describe pod "\$pod" -n ${NAMESPACE} 2>&1 | grep -A 20 "Events:" | tail -25 || true
+        echo "  -- \$pod logs (last 30 lines) --"
+        kubectl logs "\$pod" -n ${NAMESPACE} --tail=30 2>&1 || true
+      done
+      echo "--- SeaweedFS S3 reachability from cluster ---"
+      kubectl run --rm -i --restart=Never --image=curlimages/curl:latest curl-test-\$\$ \
+        -n ${NAMESPACE} -- curl -fsSL --max-time 10 http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333/ 2>&1 || true
+      ;;
+  esac
+  echo "================================================================"
+  exit \$rc
+}
+
+trap 'err_handler \$LINENO "\$BASH_COMMAND"' ERR
+
+SECTION="API key validation"
 DD_API_KEY_CLEAN="${DD_API_KEY}"
 if [[ ! "\$DD_API_KEY_CLEAN" =~ ^[0-9a-fA-F]{32}\$ ]]; then
   echo "ERROR: DD_API_KEY does not look like a valid 32-char hex Datadog API key" >&2
@@ -807,10 +1094,16 @@ if [[ "\$HTTP_CODE" != "200" ]]; then
   exit 1
 fi
 echo "=== API key valid (HTTP 200) ==="
+
+SECTION="datadog secret"
 kubectl delete secret datadog-secret -n ${NAMESPACE} 2>/dev/null || true
 kubectl create secret generic datadog-secret \
   --from-literal api-key="\$DD_API_KEY_CLEAN" -n ${NAMESPACE}
+
+SECTION="helm repo"
 helm repo add datadog https://helm.datadoghq.com --force-update 2>/dev/null || helm repo update
+
+SECTION="cloudprem helm install"
 cat > /tmp/ddvals.yaml << 'EOF'
 datadog:
   site: ${DD_SITE}
@@ -850,16 +1143,12 @@ janitor:
 EOF
 echo "=== deploying cloudprem helm chart ==="
 helm upgrade --install ${NAMESPACE} datadog/cloudprem -f /tmp/ddvals.yaml -n ${NAMESPACE}
-echo "=== waiting for all pods Ready (up to 10 min) ==="
-if ! kubectl wait --for=condition=Ready pod \
+
+SECTION="pod ready wait"
+echo "=== waiting for all pods Ready (up to 20 min) ==="
+kubectl wait --for=condition=Ready pod \
   -l app.kubernetes.io/instance=${NAMESPACE} \
-  -n ${NAMESPACE} --timeout=1200s 2>&1; then
-  echo "=== pods not ready — describing pending pods ==="
-  kubectl get pods -n ${NAMESPACE}
-  kubectl describe pods -n ${NAMESPACE} \
-    --field-selector=status.phase=Pending 2>/dev/null | grep -A10 "Events:" | head -40
-  exit 1
-fi
+  -n ${NAMESPACE} --timeout=1200s
 echo "=== pod status ==="
 kubectl get pods -n ${NAMESPACE}
 echo "=== restarting searcher to pick up new datadog-secret ==="
@@ -872,8 +1161,73 @@ write_phase6() { cat > /tmp/byoc_p6.sh << REMOTE
 #!/bin/bash
 set -euo pipefail
 export KUBECONFIG=/root/.kube/config
+
+SECTION="init"
+
+err_handler() {
+  local rc=\$?
+  local line=\$1
+  local cmd=\$2
+  echo ""
+  echo "================================================================"
+  echo "  PHASE 6 FAILED  (Datadog Operator + Agent)"
+  echo "  Section  : \$SECTION"
+  echo "  Line     : \$line"
+  echo "  Command  : \$cmd"
+  echo "  Exit code: \$rc"
+  echo "================================================================"
+  echo ""
+  case "\$SECTION" in
+    "operator helm install")
+      echo "--- helm status datadog-operator ---"
+      helm status datadog-operator -n ${NAMESPACE} 2>&1 || true
+      echo "--- operator pods ---"
+      kubectl get pods -n ${NAMESPACE} -l app.kubernetes.io/name=datadog-operator -o wide 2>&1 || true
+      echo "--- operator pod logs (last 40 lines) ---"
+      kubectl logs -n ${NAMESPACE} -l app.kubernetes.io/name=datadog-operator --tail=40 2>&1 || true
+      echo "--- warning events in ${NAMESPACE} ---"
+      kubectl get events -n ${NAMESPACE} --field-selector type=Warning 2>&1 | tail -20 || true
+      ;;
+    "DDA apply")
+      echo "--- /tmp/dda.yaml contents ---"
+      cat /tmp/dda.yaml 2>/dev/null || echo "(file missing)"
+      echo "--- kubectl api-resources (check CRD exists) ---"
+      kubectl api-resources | grep -i datadogagent 2>&1 || echo "(DatadogAgent CRD not found)"
+      echo "--- operator logs (last 40 lines) ---"
+      kubectl logs -n ${NAMESPACE} -l app.kubernetes.io/name=datadog-operator --tail=40 2>&1 || true
+      ;;
+    "cluster-agent wait")
+      echo "--- datadogagent resource status ---"
+      kubectl describe datadogagent datadog -n ${NAMESPACE} 2>&1 | tail -40 || true
+      echo "--- operator logs (last 50 lines) ---"
+      kubectl logs -n ${NAMESPACE} -l app.kubernetes.io/name=datadog-operator --tail=50 2>&1 || true
+      echo "--- all pods in ${NAMESPACE} ---"
+      kubectl get pods -n ${NAMESPACE} -o wide 2>&1 || true
+      echo "--- warning events ---"
+      kubectl get events -n ${NAMESPACE} --field-selector type=Warning 2>&1 | tail -20 || true
+      ;;
+    "agent daemonset wait")
+      echo "--- daemonset status ---"
+      kubectl get daemonset datadog-agent -n ${NAMESPACE} 2>&1 || true
+      echo "--- agent pod status ---"
+      kubectl get pods -n ${NAMESPACE} -l agent.datadoghq.com/component=agent -o wide 2>&1 || true
+      echo "--- agent pod logs (last 40 lines) ---"
+      kubectl logs -n ${NAMESPACE} -l agent.datadoghq.com/component=agent --tail=40 2>&1 || true
+      echo "--- warning events ---"
+      kubectl get events -n ${NAMESPACE} --field-selector type=Warning 2>&1 | tail -20 || true
+      ;;
+  esac
+  echo "================================================================"
+  exit \$rc
+}
+
+trap 'err_handler \$LINENO "\$BASH_COMMAND"' ERR
+
+SECTION="operator helm install"
 echo "=== installing datadog operator ==="
 helm upgrade --install datadog-operator datadog/datadog-operator -n ${NAMESPACE} --wait --timeout=5m
+
+SECTION="DDA apply"
 cat > /tmp/dda.yaml << 'EOF'
 apiVersion: datadoghq.com/v2alpha1
 kind: DatadogAgent
@@ -903,14 +1257,16 @@ spec:
             fieldRef: {fieldPath: spec.nodeName}
 EOF
 kubectl apply -f /tmp/dda.yaml
+
+SECTION="cluster-agent wait"
 echo "=== waiting for operator to create cluster-agent deployment (up to 10 min) ==="
 FOUND=false
-for i in $(seq 1 120); do
+for i in \$(seq 1 120); do
   if kubectl get deployment/datadog-cluster-agent -n ${NAMESPACE} &>/dev/null; then
     FOUND=true
     break
   fi
-  [[ $((i % 6)) -eq 0 ]] && echo "  still waiting for cluster-agent... ($((i * 5))s elapsed)"
+  [[ \$((i % 6)) -eq 0 ]] && echo "  still waiting for cluster-agent... (\$((i * 5))s elapsed)"
   sleep 5
 done
 if [[ "\$FOUND" == "false" ]]; then
@@ -924,6 +1280,7 @@ else
   kubectl wait deployment/datadog-cluster-agent -n ${NAMESPACE} \
     --for=condition=Available --timeout=600s 2>/dev/null \
     || echo "WARNING: cluster-agent not Available within 10 min — it may still be pulling images"
+  SECTION="agent daemonset wait"
   kubectl rollout status daemonset/datadog-agent -n ${NAMESPACE} --timeout=600s 2>/dev/null \
     || echo "WARNING: agent daemonset rollout incomplete — it may still be pulling images"
 fi
@@ -935,8 +1292,39 @@ REMOTE
 
 write_phase7() { cat > /tmp/byoc_p7.sh << REMOTE
 #!/bin/bash
-set -uo pipefail
+set -euo pipefail
 export KUBECONFIG=/root/.kube/config
+
+SECTION="init"
+
+err_handler() {
+  local rc=\$?
+  local line=\$1
+  local cmd=\$2
+  echo ""
+  echo "================================================================"
+  echo "  PHASE 7 FAILED  (reverse connection check)"
+  echo "  Section  : \$SECTION"
+  echo "  Line     : \$line"
+  echo "  Command  : \$cmd"
+  echo "  Exit code: \$rc"
+  echo "================================================================"
+  echo ""
+  echo "--- all pods in ${NAMESPACE} ---"
+  kubectl get pods -n ${NAMESPACE} -o wide 2>&1 || true
+  echo "--- control plane pod logs (last 30 lines) ---"
+  kubectl logs -n ${NAMESPACE} -l app.kubernetes.io/component=control-plane --tail=30 2>&1 || true
+  echo "--- searcher pod logs (last 30 lines) ---"
+  kubectl logs -n ${NAMESPACE} -l app.kubernetes.io/component=searcher --tail=30 2>&1 || true
+  echo "--- warning events in ${NAMESPACE} ---"
+  kubectl get events -n ${NAMESPACE} --field-selector type=Warning 2>&1 | tail -20 || true
+  echo "================================================================"
+  exit \$rc
+}
+
+trap 'err_handler \$LINENO "\$BASH_COMMAND"' ERR
+
+SECTION="searcher pod wait"
 echo "=== waiting for searcher pod to be Running ==="
 SEARCHER_POD=""
 for i in \$(seq 1 30); do
@@ -946,11 +1334,16 @@ for i in \$(seq 1 30); do
   sleep 5
 done
 if [[ -z "\$SEARCHER_POD" ]]; then
-  echo "ERROR: searcher pod not Running after 150s"
+  echo "ERROR: searcher pod not Running after 150s" >&2
+  echo "--- pod status ---"
   kubectl get pods -n ${NAMESPACE} 2>/dev/null || true
+  echo "--- describe searcher pod ---"
+  kubectl describe pods -n ${NAMESPACE} -l app.kubernetes.io/component=searcher 2>&1 | grep -A 15 "Events:" | tail -20 || true
   exit 1
 fi
 echo "Found: \$SEARCHER_POD"
+
+SECTION="reverse connection poll"
 echo "=== polling searcher logs for reverse connection ==="
 CONNECTED=false
 for i in \$(seq 1 60); do
@@ -976,6 +1369,9 @@ if [[ "\$CONNECTED" == "false" ]]; then
   echo "TIMEOUT: no confirmed connection after 5 minutes"
   echo "=== last 50 searcher log lines ==="
   kubectl logs "\$SEARCHER_POD" -n ${NAMESPACE} --tail=50 2>/dev/null || true
+  echo "=== control plane logs (last 50 lines) ==="
+  kubectl logs -n ${NAMESPACE} -l app.kubernetes.io/component=control-plane --tail=50 2>/dev/null || true
+  echo "NOTE: if the feature flag logs-cloudprem is not enabled, no connection attempt will appear at all"
 fi
 REMOTE
 }
