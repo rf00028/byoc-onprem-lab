@@ -1,25 +1,39 @@
 # Datadog BYOC CloudPrem — Bare-Metal Lab
 
-> Deploy a fully operational [Datadog CloudPrem](https://docs.datadoghq.com/cloudprem/) environment on bare-metal Kubernetes in **15–20 minutes** — no EKS, no GKE, no SSH required.
+> Deploy a fully operational [Datadog CloudPrem](https://docs.datadoghq.com/cloudprem/) environment on bare-metal Kubernetes in **~25 minutes** — no EKS, no GKE, no SSH required.
 
 A single interactive script that teaches you what it deploys as it deploys it. Built and validated by the Datadog SE team.
+
+---
+
+## Before You Do Anything Else
+
+> **The `logs-cloudprem` feature flag must be enabled on your Datadog org before the reverse connection will activate. Without it, everything installs cleanly, all pods go green, and absolutely nothing shows up in the UI. This is the #1 footgun.**
+
+Enable it now, before launching a single instance:
+
+[mosaic.us1.ddbuild.io/feature-flags/logs-cloudprem](https://mosaic.us1.ddbuild.io/feature-flags/logs-cloudprem)
+
+If you don't have Mosaic access, ask your Datadog contact or a Mosaic admin to enable it. The install takes ~25 minutes — use that time to get the flag enabled so you're not waiting on it after everything is up.
 
 ---
 
 ## Quick Start
 
 ```bash
-# 0. Configure your AWS profile (paste SSO export lines first)
+# 0. Enable the logs-cloudprem feature flag (see above) — do this first
+
+# 1. Configure your AWS profile (paste SSO export lines first)
 aws configure set aws_access_key_id     "$AWS_ACCESS_KEY_ID"     --profile byoc
 aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY" --profile byoc
 aws configure set aws_session_token     "$AWS_SESSION_TOKEN"     --profile byoc
 
-# 1. Launch EC2 instances and wait for SSM registration (~3 min)
+# 2. Launch EC2 instances and wait for SSM registration (~3 min)
 git clone https://github.com/rf00028/byoc-onprem-lab
 cd byoc-onprem-lab
 bash launch_instances.sh
 
-# 2. Install the full BYOC stack (~15–20 min)
+# 3. Install the full BYOC stack (~20–25 min)
 bash install.sh
 ```
 
@@ -29,35 +43,37 @@ The script asks ~8 questions, press **Enter once** to confirm, then runs fully a
 
 > **Phase 1 takes 12–15 minutes** (package installs + `kubeadm init`). The spinner is running — it's not hung. Don't Ctrl+C.
 
+> **If the install is interrupted for any reason**, just re-run `bash install.sh` and select the same instances. Completed phases are skipped automatically — it picks up exactly where it left off.
+
 ---
 
 ## What It Deploys
 
 ```
   Datadog SaaS (app.datadoghq.com)
-       ↑  reverse WebSocket — no public ingress required
-  ┌──────────────────────────────────────────────────────────────┐
-  │  EC2: m5zn.metal  ·  Kubernetes (kubeadm)                   │
-  │                                                              │
-  │   ┌─────────────────────────────────────────────────────┐   │
-  │   │  byoclogs namespace                                 │   │
-  │   │                                                     │   │
-  │   │  control-plane ── reverse connection to SaaS        │   │
-  │   │  indexer       ── writes log splits → SeaweedFS     │   │
-  │   │  searcher      ── executes queries from SaaS        │   │
-  │   │  metastore     ── split catalog → PostgreSQL        │   │
-  │   │  janitor       ── enforces retention policy         │   │
-  │   │  Datadog Agent ── collects pod logs → indexer:7280  │   │
-  │   └─────────────────────────────────────────────────────┘   │
-  │                                                              │
-  │   SeaweedFS (S3 API :8333)  ·  s3://byoclogs/indexes        │
-  └──────────────────────────────────────────────────────────────┘
-                    │  SQL :5432
-       ┌────────────┴──────────────┐
-       │  EC2: t3.micro            │
-       │  PostgreSQL 14            │
-       │  (split metadata store)   │
-       └───────────────────────────┘
+       ^  reverse WebSocket — no public ingress required
+  +--------------------------------------------------------------+
+  |  EC2: m5.4xlarge  ·  Kubernetes (kubeadm)                   |
+  |                                                              |
+  |   +-----------------------------------------------------+   |
+  |   |  byoclogs namespace                                 |   |
+  |   |                                                     |   |
+  |   |  control-plane -- reverse connection to SaaS        |   |
+  |   |  indexer       -- writes log splits -> SeaweedFS    |   |
+  |   |  searcher      -- executes queries from SaaS        |   |
+  |   |  metastore     -- split catalog -> PostgreSQL       |   |
+  |   |  janitor       -- enforces retention policy         |   |
+  |   |  Datadog Agent -- collects pod logs -> indexer:7280 |   |
+  |   +-----------------------------------------------------+   |
+  |                                                              |
+  |   SeaweedFS (S3 API :8333)  ·  s3://byoclogs/indexes        |
+  +--------------------------------------------------------------+
+                    |  SQL :5432
+       +------------+------------------------+
+       |  EC2: t3.micro                      |
+       |  PostgreSQL 14                      |
+       |  (split metadata store)             |
+       +-------------------------------------+
 ```
 
 | Component | What it is | Why this one |
@@ -75,6 +91,7 @@ The script asks ~8 questions, press **Enter once** to confirm, then runs fully a
 ## Prerequisites
 
 ### Your laptop
+
 | Tool | Required for |
 |---|---|
 | `aws` CLI v2 | All SSM remote execution |
@@ -101,7 +118,7 @@ aws sts get-caller-identity --profile byoc
 
 Your local AWS profile needs: `AmazonSSMFullAccess` + `AmazonEC2ReadOnlyAccess` + `IAMFullAccess` (for instance profile creation).
 
-### AWS — launch instances with the launcher script
+### Launching instances
 
 ```bash
 bash launch_instances.sh
@@ -119,6 +136,7 @@ The script:
 Once it finishes, run `bash install.sh` and select the two instances it discovered.
 
 **Override defaults** with environment variables before running:
+
 ```bash
 export BYOC_PROFILE=byoc          # AWS profile
 export BYOC_REGION=us-east-1      # AWS region
@@ -132,6 +150,7 @@ bash launch_instances.sh
 | PostgreSQL node | `t3.micro` | 20 GB gp2 | Override with `BYOC_PG_TYPE` |
 
 ### Datadog
+
 - Org with `logs-cloudprem` feature flag enabled → [mosaic.us1.ddbuild.io/feature-flags/logs-cloudprem](https://mosaic.us1.ddbuild.io/feature-flags/logs-cloudprem)
 - A Datadog API key (not an app key)
 
@@ -142,14 +161,16 @@ bash launch_instances.sh
 The installer runs seven sequential phases, with Phases 3 and 4 executing **in parallel** for speed:
 
 ```
-Phase 1  Kubernetes bootstrap     kubeadm init, containerd, remove control-plane taint
-Phase 2  Cilium CNI               eBPF pod networking, waits for node Ready
-Phase 3  Storage layer    ┐       local-path-provisioner + SeaweedFS + bucket/user
-Phase 4  PostgreSQL       ┘ parallel on separate instance
-Phase 5  CloudPrem               helm install, all pods to Ready
-Phase 6  Datadog Agent            Operator + DatadogAgent CRD, log collection active
-Phase 7  Verify connection        polls control-plane logs until reverse WebSocket is live
+Phase 1  Kubernetes bootstrap     kubeadm init, containerd, remove control-plane taint   ~12-15 min
+Phase 2  Cilium CNI               eBPF pod networking, waits for node Ready               ~3 min
+Phase 3  Storage layer    +--     local-path-provisioner + SeaweedFS + bucket/user        ~5 min  } parallel
+Phase 4  PostgreSQL        +--    install + configure on separate instance                ~5 min  }
+Phase 5  CloudPrem                helm install, all pods to Ready                         ~5 min
+Phase 6  Datadog Agent            Operator + DatadogAgent CRD, log collection active      ~3 min
+Phase 7  Verify connection        polls control-plane logs until reverse WebSocket is live ~1 min
 ```
+
+**Total wall-clock: ~25 minutes** (Phases 3 and 4 run concurrently).
 
 ### Smart features
 
@@ -188,19 +209,61 @@ The script aborts if `BYOC_K8S_INSTANCE`, `BYOC_PG_INSTANCE`, or `BYOC_DD_API_KE
 
 ---
 
+## Demo Walkthrough
+
+Once Phase 7 completes and the reverse WebSocket is confirmed live, here is the tour to give a customer.
+
+### 1. Show the connected cluster
+
+Go to **[app.datadoghq.com/byoc-logs](https://app.datadoghq.com/byoc-logs)**.
+
+Your cluster appears as `Connected`, type `Reverse`. This is the key slide — the customer's logs never leave their environment. The control plane in SaaS holds an outbound WebSocket to the indexer; all search queries travel over that channel, results flow back, and no inbound firewall rules are needed.
+
+### 2. Show live log ingestion
+
+Hover the cluster name and click **Search Logs**. Pod logs from the Kubernetes node appear within ~2 minutes of install completing. These are the CloudPrem components logging to themselves — a working closed loop.
+
+Point out the source: the Datadog Agent is running as a pod on the same node, collecting container logs via the CRI socket, and shipping directly to the indexer at `indexer:7280` — not to SaaS intake. The SaaS backend never sees raw log bytes.
+
+### 3. Show CloudPrem metrics
+
+Open **[app.datadoghq.com/metric/summary?filter=cloudprem](https://app.datadoghq.com/metric/summary?filter=cloudprem)**. QuickWit emits internal metrics over DogStatsD to the local Agent, which forwards them to SaaS as regular metrics. This gives customers full observability into their own log infrastructure from within Datadog — index rates, query latency, storage usage — without any logs crossing the boundary.
+
+### 4. Walk through the data flow
+
+Use the architecture diagram above (or the one printed by the installer during each phase) to walk through the data path:
+
+- **Logs written**: Agent → indexer → SeaweedFS (S3 on the same node)
+- **Logs queried**: SaaS UI → reverse WebSocket → searcher → SeaweedFS → results back over WebSocket → UI
+- **Metadata**: indexer → PostgreSQL (split catalog on the t3.micro)
+- **Control plane role**: holds the connection open, proxies search, enforces retention via janitor
+
+### 5. Key talking points
+
+- No inbound firewall rules — the cluster dials out to SaaS, not the other way around
+- Works in air-gapped or private-subnet environments (only egress to `app.datadoghq.com` required)
+- Kubernetes-native — runs on EKS, GKE, AKS, bare metal, or any CNCF-conformant cluster
+- Storage is pluggable — any S3-compatible store works (AWS S3, Azure Blob via gateway, Ceph, NetApp, etc.)
+- The Datadog Agent is optional — any log shipper that speaks HTTP to the indexer works
+
+---
+
 ## Key Deviations from the Official Article
 
 This installer fixes issues discovered during full verbatim validation. See [docs/deviations.md](docs/deviations.md) for complete root-cause analysis.
 
-| Issue | Root cause | Fix |
-|---|---|---|
-| Longhorn deadlock on k8s 1.32+ | Webhook calls itself during startup with `failurePolicy: Fail`; controller reconciliation prevents patching | Replaced with `local-path-provisioner` |
-| MinIO archived (2024) | Open-source AGPL repo is read-only — supply chain risk | Replaced with SeaweedFS |
-| QuickWit SSL rejection | QuickWit requires SSL by default; bare-metal PostgreSQL has no certs | Added `?sslmode=disable` to URI |
-| pg_hba.conf missing | Article doesn't include this step; PostgreSQL 14 uses `md5` not `scram-sha-256` | Added `host byoclogs byoclogs 10.0.0.0/8 md5` |
-| kubeconfig uses public IP | kubeadm sets public IP; SSM runs inside the instance, no hairpin NAT | Use private IP for `--control-plane-endpoint` |
-| Cilium bootstrap deadlock | Cluster service IP unreachable during CNI init on bare metal | Added `--set k8sServiceHost/Port` flags |
-| Longhorn webhooks persist | Manager recreates webhook configs on every restart, blocks PVC binding | Delete configs + permanently disable manager DaemonSet |
+| # | Issue | Root cause | Fix |
+|---|---|---|---|
+| 1 | EKS unavailable | SCP blocked EKS in us-east-1; EIP quota exhausted in us-west-1 | Bare-metal kubeadm on EC2 |
+| 2 | Longhorn deadlock on k8s 1.32+ | Webhook calls itself during startup with `failurePolicy: Fail`; controller reconciliation prevents patching | Replaced with `local-path-provisioner` |
+| 3 | MinIO archived (2024) | Open-source AGPL repo is read-only — supply chain risk | Replaced with SeaweedFS |
+| 4 | QuickWit SSL rejection | QuickWit requires SSL by default; bare-metal PostgreSQL has no certs | Added `?sslmode=disable` to URI |
+| 5 | pg_hba.conf missing | Article doesn't include this step; PostgreSQL 14 uses `md5` not `scram-sha-256` | Added `host byoclogs byoclogs 10.0.0.0/8 md5` |
+| 6 | kubeconfig uses public IP | kubeadm sets public IP; SSM runs inside the instance, no hairpin NAT | Use private IP for `--control-plane-endpoint` |
+| 7 | Cilium bootstrap deadlock | Cluster service IP unreachable during CNI init on bare metal | Added `--set k8sServiceHost/Port` flags |
+| 8 | Longhorn webhooks persist after uninstall | Manager recreates webhook configs on every restart, blocks PVC binding even after `helm uninstall` | Delete configs + permanently disable manager DaemonSet |
+| 9 | SSM as sole remote access method | Port 22 blocked by sandbox security group | Instance profile with `AmazonSSMManagedInstanceCore`; launcher waits for SSM `Online` |
+| 10 | SeaweedFS S3 requires explicit region | AWS SDK v2 rejects requests with no region header; splits silently fail to upload | Added `region: us-east-1` to CloudPrem S3 config |
 
 ---
 
@@ -220,7 +283,8 @@ For `datadoghq.com`:
 
 ## Troubleshooting
 
-**AWS STS token expired**
+### AWS STS token expired
+
 ```bash
 # Paste fresh export lines from the SSO portal, then:
 aws configure set aws_access_key_id     "$AWS_ACCESS_KEY_ID"     --profile byoc
@@ -228,43 +292,139 @@ aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY" --profile byoc
 aws configure set aws_session_token     "$AWS_SESSION_TOKEN"     --profile byoc
 aws sts get-caller-identity --profile byoc
 ```
+
 The script detects this automatically and pauses, but tokens expire every ~1 hour so you may need to refresh mid-run.
 
-**Cluster not appearing in `app.datadoghq.com/byoc-logs`**
+---
 
-The most common cause is the `logs-cloudprem` feature flag not being enabled on your org. The reverse connection silently does nothing until it is.
+### Phase 1 spinner running for more than 20 minutes
 
+Phase 1 is legitimately slow (kubeadm init + package installs), but it should not exceed 20 minutes. If it does, open a second terminal and check SSM directly:
+
+```bash
+aws ssm list-command-invocations \
+  --instance-id <k8s-instance-id> \
+  --details \
+  --region $BYOC_REGION --profile $BYOC_PROFILE \
+  --query 'CommandInvocations[0].CommandPlugins[0].Output'
 ```
-# Check the control-plane pod logs directly:
-# (run via SSM or on the k8s instance)
+
+Common causes: instance is out of disk space (check that you launched with 300 GB gp3), or `apt` is waiting on a dpkg lock from Ubuntu's automatic update process. You can also log in via SSM (see below) and run `journalctl -f` to watch live output.
+
+---
+
+### Phase 7 never prints "connected" / times out
+
+Phase 7 polls control-plane pod logs for a WebSocket confirmation string. If it times out:
+
+**1. Check the feature flag first** — the most common cause. If it's not enabled, the control-plane will connect to SaaS but the session is silently rejected.
+
+**2. Check the control-plane pod logs directly:**
+
+```bash
+# Via SSM session on the k8s instance:
 export KUBECONFIG=/root/.kube/config
 kubectl logs -n byoclogs -l app.kubernetes.io/component=control-plane --tail=50
 ```
 
-If logs show `connected` or `established` but the cluster still doesn't appear — the feature flag is the issue.
+Look for `connected`, `established`, or `error` lines. Repeated connection refused or TLS errors indicate a bad API key or wrong `DD_SITE`.
 
-**Metastore CrashLoopBackOff**
+**3. Verify the pod is running:**
+
 ```bash
-kubectl logs -n byoclogs deploy/byoclogs-cloudprem-metastore --tail=5
-# "SSL encryption"    → URI is missing ?sslmode=disable
-# "no pg_hba.conf"    → add host entry, systemctl reload postgresql
+kubectl get pods -n byoclogs
 ```
 
-**Indexer Pending — webhook error**
+If the control-plane is in `CrashLoopBackOff`, check its logs for configuration errors (wrong cluster name format, invalid API key, missing secret).
+
+---
+
+### Cluster not appearing in `app.datadoghq.com/byoc-logs`
+
+Almost always the `logs-cloudprem` feature flag. If logs show `connected` or `established` but the cluster still doesn't appear in the UI — the feature flag is the issue. Contact your Mosaic admin.
+
+---
+
+### Pods stuck in ImagePullBackOff
+
+The node cannot pull container images.
+
+```bash
+kubectl describe pod <pod-name> -n byoclogs
+# Check the Events section for the specific registry and error
+```
+
+Common causes:
+- DNS not resolving from within the cluster — check `kubectl get pods -n kube-system` for CoreDNS pod status
+- containerd not running — check `systemctl status containerd` on the k8s instance via SSM
+- DockerHub pull rate limits — if running many installs from the same IP, wait a few minutes and re-run
+
+---
+
+### SeaweedFS pods not ready
+
+```bash
+kubectl get pvc -n byoclogs
+kubectl get storageclass
+kubectl get pods -n local-path-storage
+```
+
+If the `local-path` StorageClass is missing or the provisioner pods are not running, Phase 3 was interrupted. Re-run `bash install.sh` — the checkpoint system retries Phase 3 automatically.
+
+---
+
+### Metastore CrashLoopBackOff
+
+```bash
+kubectl logs -n byoclogs deploy/byoclogs-cloudprem-metastore --tail=5
+# "SSL encryption"   -> URI is missing ?sslmode=disable
+# "no pg_hba.conf"   -> add host entry and reload postgresql on the postgres instance
+```
+
+---
+
+### Indexer Pending — webhook error
+
 ```bash
 kubectl delete validatingwebhookconfiguration longhorn-webhook-validator --ignore-not-found
 kubectl delete mutatingwebhookconfiguration   longhorn-webhook-mutator   --ignore-not-found
 ```
 
-**Node stuck NotReady**
+---
+
+### Node stuck NotReady
+
 ```bash
 kubectl get pods -n kube-system | grep cilium
-# If Cilium pods failing: confirm helm install included --set k8sServiceHost and k8sServicePort
+# If Cilium pods are failing: confirm helm install included --set k8sServiceHost and k8sServicePort
+```
+
+---
+
+### Accessing the k8s instance manually via SSM
+
+If you need an interactive shell to debug:
+
+```bash
+aws ssm start-session \
+  --target <k8s-instance-id> \
+  --region $BYOC_REGION --profile $BYOC_PROFILE
+```
+
+No SSH or key pair needed. Once in:
+
+```bash
+sudo -i
+export KUBECONFIG=/root/.kube/config
+kubectl get pods -A
+kubectl get nodes
 ```
 
 ---
 
 ## Cleanup
+
+> **Cost reminder:** The default instance types run approximately **$0.768/hr** (`m5.4xlarge`) and **$0.010/hr** (`t3.micro`) in `us-east-1` — roughly **$0.78/hr combined**. A lab left running overnight costs ~$6. Terminate when you're done.
 
 ```bash
 # Set these to match your deployment (defaults shown)
@@ -278,6 +438,7 @@ aws ec2 terminate-instances \
 ```
 
 To find your instance IDs if you've lost them:
+
 ```bash
 aws ec2 describe-instances \
   --filters "Name=tag:Project,Values=byoc-cloudprem-lab" \
@@ -288,11 +449,9 @@ aws ec2 describe-instances \
 
 ---
 
-## Docs
+## Reference
 
-| File | Contents |
-|---|---|
-| [docs/deviations.md](docs/deviations.md) | Full deviation report — root cause analysis and article fix recommendations |
+- [docs/deviations.md](docs/deviations.md) — full deviation report with root cause analysis and article fix recommendations
 
 ---
 
