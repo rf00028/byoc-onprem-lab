@@ -600,6 +600,7 @@ export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 apt-get update -qq && apt-get install -y -qq postgresql-14
 systemctl enable postgresql && systemctl start postgresql
+sudo -u postgres psql -c "SELECT 1" > /dev/null 2>&1 || { echo "ERROR: PostgreSQL not accepting connections" >&2; exit 1; }
 sudo -u postgres psql -c "CREATE USER ${PG_USER} WITH ENCRYPTED PASSWORD '${PG_PASS}';" 2>/dev/null || true
 sudo -u postgres psql -c "CREATE DATABASE ${PG_USER};" 2>/dev/null || true
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${PG_USER} TO ${PG_USER};"
@@ -611,7 +612,13 @@ grep -q "10.0.0.0" "\$PG_HBA" || \
   echo "host  ${PG_USER}  ${PG_USER}  10.0.0.0/8  md5" >> "\$PG_HBA"
 grep -q "172.16.0.0" "\$PG_HBA" || \
   echo "host  ${PG_USER}  ${PG_USER}  172.16.0.0/12  md5" >> "\$PG_HBA"
+grep -q "192.168.0.0" "\$PG_HBA" || \
+  echo "host  ${PG_USER}  ${PG_USER}  192.168.0.0/16  md5" >> "\$PG_HBA"
 systemctl restart postgresql
+for i in \$(seq 1 20); do
+  systemctl is-active postgresql && break
+  sleep 3
+done
 systemctl is-active postgresql
 echo "PostgreSQL ready at ${PG_IP}:5432"
 REMOTE
@@ -660,6 +667,7 @@ if [[ ! "\$DD_API_KEY_CLEAN" =~ ^[0-9a-fA-F]{32}\$ ]]; then
 fi
 echo "=== validating API key against Datadog ==="
 HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" \
+  --max-time 15 --connect-timeout 10 \
   -H "DD-API-KEY: \$DD_API_KEY_CLEAN" \
   "https://api.${DD_SITE}/api/v1/validate")
 if [[ "\$HTTP_CODE" != "200" ]]; then
@@ -764,13 +772,14 @@ spec:
             fieldRef: {fieldPath: spec.nodeName}
 EOF
 kubectl apply -f /tmp/dda.yaml
-echo "=== waiting for operator to create cluster-agent deployment (up to 5 min) ==="
+echo "=== waiting for operator to create cluster-agent deployment (up to 10 min) ==="
 FOUND=false
 for i in $(seq 1 120); do
   if kubectl get deployment/datadog-cluster-agent -n ${NAMESPACE} &>/dev/null; then
     FOUND=true
     break
   fi
+  [[ $((i % 6)) -eq 0 ]] && echo "  still waiting for cluster-agent... ($((i * 5))s elapsed)"
   sleep 5
 done
 if [[ "\$FOUND" == "false" ]]; then
@@ -816,7 +825,7 @@ fi
 echo "Found: \$SEARCHER_POD"
 echo "=== polling searcher logs for reverse connection ==="
 CONNECTED=false
-for i in \$(seq 1 36); do
+for i in \$(seq 1 60); do
   LOGS=\$(kubectl logs "\$SEARCHER_POD" -n ${NAMESPACE} --tail=200 2>/dev/null)
   UID_LINE=\$(echo "\$LOGS" | grep "fetched cluster remote uid" | tail -1)
   INIT_LINE=\$(echo "\$LOGS" | grep "initiating new reverse connection" | tail -1)
@@ -832,10 +841,11 @@ for i in \$(seq 1 36); do
     echo "\$AUTH_ERR"
     break
   fi
+  [[ $((i % 6)) -eq 0 ]] && echo "  waiting for reverse WebSocket... ($((i * 5))s elapsed)"
   sleep 5
 done
 if [[ "\$CONNECTED" == "false" ]]; then
-  echo "TIMEOUT: no confirmed connection after 3 minutes — showing searcher websocket logs:"
+  echo "TIMEOUT: no confirmed connection after 5 minutes — showing searcher websocket logs:"
   kubectl logs "\$SEARCHER_POD" -n ${NAMESPACE} --tail=50 2>/dev/null \
     | grep -i "websocket\|cloudprem::server\|reverse\|auth\|error"
 fi
