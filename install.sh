@@ -18,8 +18,8 @@ trap 'printf "${SHOW_CURSOR}"; stty echo 2>/dev/null; [[ -n "${SPINNER_PID:-}" ]
 # CKPT_DIR is keyed to K8S_INSTANCE after selection. A config.env is saved
 # there so the user only needs to type 3 things on resume (profile, region,
 # instance ID) and everything else is reloaded automatically.
-GLOBAL_LAST="${TMPDIR:-/tmp}/.byoc_last.env"
-CKPT_DIR="${TMPDIR:-/tmp}/.byoc_ckpt_default"
+GLOBAL_LAST="/tmp/.byoc_last.env"
+CKPT_DIR="/tmp/.byoc_ckpt_default"
 mkdir -p "$CKPT_DIR"
 ckpt_set()  { touch "$CKPT_DIR/$1"; }
 ckpt_done() { [[ -f "$CKPT_DIR/$1" ]]; }
@@ -133,6 +133,7 @@ phase_done() {
 
 pause() {
   [[ "${BYOC_YES:-}" == "1" ]] && return
+  [[ ! -e /dev/tty ]] && return
   echo -e "\n  ${YELLOW}  Press ${WHITE}[Enter]${YELLOW} to continue...${NC}"
   read -r < /dev/tty
 }
@@ -404,10 +405,16 @@ print_config() {
 
 write_phase1() { cat > /tmp/byoc_p1.sh << REMOTE
 #!/bin/bash
-set -e
+set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
+echo "=== check existing cluster health ==="
+if KUBECONFIG=/root/.kube/config kubectl get nodes 2>/dev/null | grep -q " Ready"; then
+  echo "Cluster already initialized and node is Ready — skipping reset and init"
+  KUBECONFIG=/root/.kube/config kubectl get nodes
+  exit 0
+fi
 echo "=== reset any existing cluster ==="
 kubeadm reset -f 2>/dev/null || true
 rm -rf /etc/kubernetes /root/.kube /var/lib/etcd /var/lib/kubelet /etc/cni /opt/cni 2>/dev/null || true
@@ -444,7 +451,7 @@ kubeadm init \
   --control-plane-endpoint=${K8S_IP}:6443 \
   --pod-network-cidr=10.0.0.0/16 \
   --skip-phases=addon/kube-proxy \
-  --ignore-preflight-errors=NumCPU 2>&1 | tail -5
+  --ignore-preflight-errors=NumCPU 2>&1 | tee /tmp/kubeadm-init.log
 mkdir -p /root/.kube
 cp /etc/kubernetes/admin.conf /root/.kube/config
 sed -i "s|https://.*:6443|https://${K8S_IP}:6443|g" /root/.kube/config /etc/kubernetes/admin.conf
@@ -466,7 +473,7 @@ REMOTE
 
 write_phase2() { cat > /tmp/byoc_p2.sh << REMOTE
 #!/bin/bash
-set -e
+set -euo pipefail
 export KUBECONFIG=/root/.kube/config
 echo "=== adding cilium helm repo ==="
 helm repo add cilium https://helm.cilium.io/ --force-update 2>/dev/null || helm repo update
@@ -476,16 +483,16 @@ helm upgrade --install cilium cilium/cilium \
   --namespace kube-system \
   --set k8sServiceHost=${K8S_IP} \
   --set k8sServicePort=6443 \
-  --wait --timeout=3m
+  --wait --timeout=10m
 echo "=== waiting for node Ready ==="
-kubectl wait node --all --for=condition=Ready --timeout=180s
+kubectl wait node --all --for=condition=Ready --timeout=600s
 kubectl get nodes
 REMOTE
 }
 
 write_phase3() { cat > /tmp/byoc_p3.sh << REMOTE
 #!/bin/bash
-set -e
+set -euo pipefail
 export KUBECONFIG=/root/.kube/config
 echo "=== local-path-provisioner ==="
 kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml
@@ -514,9 +521,9 @@ ingress: {enabled: false}
 EOF
 kubectl create ns seaweedfs 2>/dev/null || true
 helm upgrade --install seaweedfs seaweedfs/seaweedfs -f /tmp/swfs.yaml -n seaweedfs
-kubectl rollout status statefulset/seaweedfs-master -n seaweedfs --timeout=300s
-kubectl rollout status statefulset/seaweedfs-filer  -n seaweedfs --timeout=300s
-kubectl rollout status statefulset/seaweedfs-volume -n seaweedfs --timeout=300s
+kubectl rollout status statefulset/seaweedfs-master -n seaweedfs --timeout=600s
+kubectl rollout status statefulset/seaweedfs-filer  -n seaweedfs --timeout=600s
+kubectl rollout status statefulset/seaweedfs-volume -n seaweedfs --timeout=600s
 echo "=== bucket + user ==="
 kubectl exec -n seaweedfs seaweedfs-master-0 -- sh -c "
   echo 's3.bucket.create -name ${BUCKET}' | weed shell -master=localhost:9333
@@ -534,10 +541,10 @@ REMOTE
 
 write_phase4() { cat > /tmp/byoc_p4.sh << REMOTE
 #!/bin/bash
+set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
-set -e
 apt-get update -qq && apt-get install -y -qq postgresql-14
 systemctl enable postgresql && systemctl start postgresql
 sudo -u postgres psql -c "CREATE USER ${PG_USER} WITH ENCRYPTED PASSWORD '${PG_PASS}';" 2>/dev/null || true
@@ -590,6 +597,7 @@ REMOTE
 
 write_phase5() { cat > /tmp/byoc_p5.sh << REMOTE
 #!/bin/bash
+set -euo pipefail
 export KUBECONFIG=/root/.kube/config
 DD_API_KEY_CLEAN="${DD_API_KEY}"
 if [[ ! "\$DD_API_KEY_CLEAN" =~ ^[0-9a-fA-F]{32}\$ ]]; then
@@ -600,7 +608,7 @@ fi
 echo "=== validating API key against Datadog ==="
 HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" \
   -H "DD-API-KEY: \$DD_API_KEY_CLEAN" \
-  "https://api.datadoghq.com/api/v1/validate")
+  "https://api.${DD_SITE}/api/v1/validate")
 if [[ "\$HTTP_CODE" != "200" ]]; then
   echo "ERROR: Datadog API key validation failed (HTTP \$HTTP_CODE)" >&2
   echo "ERROR: Check your key at https://app.datadoghq.com/organization-settings/api-keys" >&2
@@ -653,7 +661,7 @@ helm upgrade --install ${NAMESPACE} datadog/cloudprem -f /tmp/ddvals.yaml -n ${N
 echo "=== waiting for all pods Ready (up to 10 min) ==="
 if ! kubectl wait --for=condition=Ready pod \
   -l app.kubernetes.io/instance=${NAMESPACE} \
-  -n ${NAMESPACE} --timeout=600s 2>&1; then
+  -n ${NAMESPACE} --timeout=1200s 2>&1; then
   echo "=== pods not ready — describing pending pods ==="
   kubectl get pods -n ${NAMESPACE}
   kubectl describe pods -n ${NAMESPACE} \
@@ -664,15 +672,16 @@ echo "=== pod status ==="
 kubectl get pods -n ${NAMESPACE}
 echo "=== restarting searcher to pick up new datadog-secret ==="
 kubectl rollout restart statefulset/${NAMESPACE}-cloudprem-searcher -n ${NAMESPACE} 2>/dev/null || true
-kubectl rollout status statefulset/${NAMESPACE}-cloudprem-searcher -n ${NAMESPACE} --timeout=120s 2>/dev/null || true
+kubectl rollout status statefulset/${NAMESPACE}-cloudprem-searcher -n ${NAMESPACE} --timeout=300s 2>/dev/null || true
 REMOTE
 }
 
 write_phase6() { cat > /tmp/byoc_p6.sh << REMOTE
 #!/bin/bash
+set -euo pipefail
 export KUBECONFIG=/root/.kube/config
 echo "=== installing datadog operator ==="
-helm upgrade --install datadog-operator datadog/datadog-operator -n ${NAMESPACE} --wait --timeout=3m
+helm upgrade --install datadog-operator datadog/datadog-operator -n ${NAMESPACE} --wait --timeout=5m
 cat > /tmp/dda.yaml << 'EOF'
 apiVersion: datadoghq.com/v2alpha1
 kind: DatadogAgent
@@ -704,7 +713,7 @@ EOF
 kubectl apply -f /tmp/dda.yaml
 echo "=== waiting for operator to create cluster-agent deployment (up to 5 min) ==="
 FOUND=false
-for i in $(seq 1 60); do
+for i in $(seq 1 120); do
   if kubectl get deployment/datadog-cluster-agent -n ${NAMESPACE} &>/dev/null; then
     FOUND=true
     break
@@ -720,9 +729,9 @@ if [[ "\$FOUND" == "false" ]]; then
   echo "PHASE6_PARTIAL"
 else
   kubectl wait deployment/datadog-cluster-agent -n ${NAMESPACE} \
-    --for=condition=Available --timeout=240s 2>/dev/null \
-    || echo "WARNING: cluster-agent not Available within 4 min — it may still be pulling images"
-  kubectl rollout status daemonset/datadog-agent -n ${NAMESPACE} --timeout=240s 2>/dev/null \
+    --for=condition=Available --timeout=600s 2>/dev/null \
+    || echo "WARNING: cluster-agent not Available within 10 min — it may still be pulling images"
+  kubectl rollout status daemonset/datadog-agent -n ${NAMESPACE} --timeout=600s 2>/dev/null \
     || echo "WARNING: agent daemonset rollout incomplete — it may still be pulling images"
 fi
 echo "=== pod status ==="
@@ -733,6 +742,7 @@ REMOTE
 
 write_phase7() { cat > /tmp/byoc_p7.sh << REMOTE
 #!/bin/bash
+set -euo pipefail
 export KUBECONFIG=/root/.kube/config
 # The reverse WebSocket is initiated by the SEARCHER pod, not the control-plane.
 # Success pattern: "fetched cluster remote uid" followed by "initiating new reverse connection"
@@ -864,7 +874,7 @@ pick_instance "Kubernetes node" K8S_INSTANCE
 echo ""
 
 # Re-key checkpoint dir now that K8S_INSTANCE is known
-CKPT_DIR="${TMPDIR:-/tmp}/.byoc_ckpt_${K8S_INSTANCE}"
+CKPT_DIR="/tmp/.byoc_ckpt_${K8S_INSTANCE}"
 mkdir -p "$CKPT_DIR"
 
 # ── Resume detection ──────────────────────────────────────────────────────────
@@ -879,6 +889,8 @@ if [[ -f "$CKPT_DIR/config.env" ]]; then
   RESUMING=1
 else
   pick_instance "PostgreSQL node" PG_INSTANCE
+  [[ "$K8S_INSTANCE" == "$PG_INSTANCE" ]] && \
+    abort "K8S and PostgreSQL instances must be different — you selected the same instance for both."
 
   echo ""
   info "Verifying both instances are online in SSM..."
@@ -1023,7 +1035,9 @@ else
   # Storage in foreground
   if ! ckpt_done "phase3"; then
     spin_start "Installing local-path-provisioner + SeaweedFS"
-    STORAGE_ELAPSED=$(ssm_run "$K8S_INSTANCE" /tmp/byoc_p3.sh) || exit 1
+    STORAGE_ELAPSED=$(ssm_run "$K8S_INSTANCE" /tmp/byoc_p3.sh) || {
+      [[ -n "${PG_PID:-}" ]] && kill "$PG_PID" 2>/dev/null; exit 1
+    }
     ckpt_set "phase3"
     phase_done "Storage (local-path + SeaweedFS)" "$STORAGE_ELAPSED"
   fi
@@ -1071,6 +1085,10 @@ echo ""
 echo -e "  ${GREEN}Storage and PostgreSQL ready. Next: CloudPrem helm install (~3 min).${NC}"
 echo -e "  ${DIM}  SeaweedFS S3 endpoint:  seaweedfs-s3.seaweedfs.svc.cluster.local:8333${NC}"
 echo -e "  ${DIM}  PostgreSQL metastore:   ${PG_IP}:5432/${PG_USER}${NC}"
+
+info "Verifying credentials before Phase 5..."
+validate_creds
+echo ""
 
 # ── Phase 5: CloudPrem ────────────────────────────────────────────────────────
 section "Phase 5 — CloudPrem" "⑤"
