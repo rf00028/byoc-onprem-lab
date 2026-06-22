@@ -23,8 +23,7 @@ If you don't have Mosaic access, ask your Datadog contact or a Mosaic admin to e
 ```bash
 # 0. Enable the logs-cloudprem feature flag (see above) — do this first
 
-# 1. Log in via AWS SSO (opens browser — one command, done)
-aws sso login --profile byoc
+# 1. Set up AWS credentials — see AWS credentials section below
 
 # 2. Launch EC2 instances and wait for SSM registration (~3 min)
 git clone https://github.com/rf00028/byoc-onprem-lab
@@ -35,7 +34,7 @@ bash launch_instances.sh
 bash install.sh
 ```
 
-> **First time?** You need a `byoc` SSO profile in `~/.aws/config` before step 1 — see [AWS credentials](#aws-credentials) below.
+> **First time?** You need a `byoc` AWS profile configured before step 2 — see [AWS credentials](#aws-credentials) below.
 
 `launch_instances.sh` creates both EC2 nodes, sets up the IAM instance profile, and waits until they're reachable via SSM. `install.sh` then discovers them automatically — just pick them from the numbered list.
 
@@ -159,32 +158,48 @@ No `kubectl`, `helm`, or SSH needed locally. Everything runs remotely via AWS SS
 
 ### AWS credentials
 
-This lab uses a `byoc` AWS SSO profile. **One-time setup** — add this to `~/.aws/config`:
+The scripts use a `byoc` AWS profile. Get temporary credentials from the AWS Access Portal and configure the profile with them.
+
+**1. Get credentials from the AWS Access Portal**
+
+Go to your AWS Access Portal, select the account and role you want to use, and click **Access keys**. Choose **Option 2** (set environment variables or add to credentials file directly).
+
+**2. Configure the `byoc` profile**
+
+Add this to `~/.aws/config`:
 
 ```ini
 [profile byoc]
-sso_start_url  = https://datadog.awsapps.com/start
-sso_account_id = <your-aws-account-id>
-sso_role_name  = <your-role-name>
-sso_region     = us-east-1
-region         = us-east-1
-output         = json
+region = us-east-1
 ```
 
-> Ask your AWS admin for the `sso_start_url`, `sso_account_id`, and `sso_role_name` values if you don't have them. The `sso_region` is the region where IAM Identity Center is deployed (often `us-east-1`); `region` is where your EC2 instances will launch.
+Add your credentials to `~/.aws/credentials`:
 
-Then log in once per session (sessions last ~8 hours):
+```ini
+[byoc]
+aws_access_key_id     = ASIA...
+aws_secret_access_key = ...
+aws_session_token     = ...
+```
+
+Or set them in one shot via CLI:
 
 ```bash
-aws sso login --profile byoc
+aws configure set aws_access_key_id     ASIA...  --profile byoc
+aws configure set aws_secret_access_key ...       --profile byoc
+aws configure set aws_session_token     ...       --profile byoc
+aws configure set region                us-east-1 --profile byoc
+```
 
-# Verify
+**3. Verify**
+
+```bash
 aws sts get-caller-identity --profile byoc
 ```
 
-**If your session expires mid-install**, the script detects it and re-runs `aws sso login` automatically — a browser tab opens, you click approve, and the install resumes.
+> **Credentials expire after ~1 hour.** When they do, return to the Access Portal, generate a new set, and re-run the configure commands above. The install checkpoint system means you can refresh mid-run and resume without losing progress.
 
-Your role needs: `AmazonSSMFullAccess` + `AmazonEC2FullAccess` + `IAMFullAccess` (for instance profile creation).
+Your role needs: `AmazonSSMFullAccess` + `AmazonEC2FullAccess`. IAM permissions are not required — the `AmazonSSMManagedInstanceCoreProfile` instance profile is already provisioned in the account.
 
 ### Launching instances
 
@@ -351,13 +366,14 @@ For `datadoghq.com`:
 
 ## Troubleshooting
 
-### AWS SSO session expired
+### AWS credentials expired
 
-SSO sessions last ~8 hours. If yours expires mid-install, the script detects it and triggers a re-login automatically. If you need to refresh manually:
+Temporary credentials from the Access Portal last ~1 hour. If they expire mid-install, the script will surface an auth error. Refresh by going back to the Access Portal, generating a new set of credentials, and running:
 
 ```bash
-aws sso login --profile byoc
-aws sts get-caller-identity --profile byoc
+aws configure set aws_access_key_id     ASIA...  --profile byoc
+aws configure set aws_secret_access_key ...       --profile byoc
+aws configure set aws_session_token     ...       --profile byoc
 ```
 
 Then re-run `bash install.sh` — the checkpoint system picks up where it left off.
