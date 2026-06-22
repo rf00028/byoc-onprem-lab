@@ -832,11 +832,8 @@ REMOTE
 
 write_phase7() { cat > /tmp/byoc_p7.sh << REMOTE
 #!/bin/bash
-set -euo pipefail
+set -uo pipefail
 export KUBECONFIG=/root/.kube/config
-# The reverse WebSocket is initiated by the SEARCHER pod, not the control-plane.
-# Success pattern: "fetched cluster remote uid" followed by "initiating new reverse connection"
-# with no "invalid authentication parameters" error within ~10s = connection live.
 echo "=== waiting for searcher pod to be Running ==="
 SEARCHER_POD=""
 for i in \$(seq 1 30); do
@@ -847,17 +844,17 @@ for i in \$(seq 1 30); do
 done
 if [[ -z "\$SEARCHER_POD" ]]; then
   echo "ERROR: searcher pod not Running after 150s"
-  kubectl get pods -n ${NAMESPACE}
+  kubectl get pods -n ${NAMESPACE} 2>/dev/null || true
   exit 1
 fi
 echo "Found: \$SEARCHER_POD"
 echo "=== polling searcher logs for reverse connection ==="
 CONNECTED=false
 for i in \$(seq 1 60); do
-  LOGS=\$(kubectl logs "\$SEARCHER_POD" -n ${NAMESPACE} --tail=200 2>/dev/null)
-  UID_LINE=\$(echo "\$LOGS" | grep "fetched cluster remote uid" | tail -1)
-  INIT_LINE=\$(echo "\$LOGS" | grep "initiating new reverse connection" | tail -1)
-  AUTH_ERR=\$(echo "\$LOGS" | grep "invalid authentication parameters" | tail -1)
+  LOGS=\$(kubectl logs "\$SEARCHER_POD" -n ${NAMESPACE} --tail=200 2>/dev/null || true)
+  UID_LINE=\$(echo "\$LOGS"  | grep "fetched cluster remote uid"        | tail -1 || true)
+  INIT_LINE=\$(echo "\$LOGS" | grep "initiating new reverse connection" | tail -1 || true)
+  AUTH_ERR=\$(echo "\$LOGS"  | grep "invalid authentication parameters" | tail -1 || true)
   if [[ -n "\$UID_LINE" && -n "\$INIT_LINE" && -z "\$AUTH_ERR" ]]; then
     echo "CONNECTION_SEEN"
     echo "\$UID_LINE"
@@ -873,9 +870,9 @@ for i in \$(seq 1 60); do
   sleep 5
 done
 if [[ "\$CONNECTED" == "false" ]]; then
-  echo "TIMEOUT: no confirmed connection after 5 minutes — showing searcher websocket logs:"
-  kubectl logs "\$SEARCHER_POD" -n ${NAMESPACE} --tail=50 2>/dev/null \
-    | grep -i "websocket\|cloudprem::server\|reverse\|auth\|error"
+  echo "TIMEOUT: no confirmed connection after 5 minutes"
+  echo "=== last 50 searcher log lines ==="
+  kubectl logs "\$SEARCHER_POD" -n ${NAMESPACE} --tail=50 2>/dev/null || true
 fi
 REMOTE
 }
