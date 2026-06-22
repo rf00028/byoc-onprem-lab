@@ -721,9 +721,9 @@ for i in $(seq 1 120); do
   sleep 5
 done
 if [[ "\$FOUND" == "false" ]]; then
-  echo "WARNING: cluster-agent deployment not yet created after 5 min — operator may still be reconciling"
+  echo "WARNING: cluster-agent deployment not yet created after 10 min — operator may still be reconciling"
   echo "=== operator pod status ==="
-  kubectl get pods -n ${NAMESPACE} -l app.kubernetes.io/name=datadog-operator
+  kubectl get pods -n ${NAMESPACE} -l app.kubernetes.io/name=datadog-operator 2>/dev/null || true
   echo "=== datadogagent status ==="
   kubectl get datadogagent -n ${NAMESPACE} 2>/dev/null || true
   echo "PHASE6_PARTIAL"
