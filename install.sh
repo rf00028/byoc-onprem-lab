@@ -32,6 +32,7 @@ K8S_INSTANCE=${K8S_INSTANCE}
 PG_INSTANCE=${PG_INSTANCE}
 DD_SITE=${DD_SITE}
 CLUSTER_NAME=${CLUSTER_NAME}
+RELEASE=${RELEASE}
 NAMESPACE=${NAMESPACE}
 BUCKET=${BUCKET}
 PG_USER=${PG_USER}
@@ -1120,8 +1121,8 @@ err_handler() {
       helm repo list 2>&1 || true
       ;;
     "cloudprem helm install")
-      echo "--- helm status ${NAMESPACE} ---"
-      helm status ${NAMESPACE} -n ${NAMESPACE} 2>&1 || true
+      echo "--- helm status ${RELEASE} ---"
+      helm status ${RELEASE} -n ${NAMESPACE} 2>&1 || true
       echo "--- all pods in ${NAMESPACE} ---"
       kubectl get pods -n ${NAMESPACE} -o wide 2>&1 || true
       echo "--- PVCs in ${NAMESPACE} ---"
@@ -1189,7 +1190,7 @@ datadog:
   clusterName: ${CLUSTER_NAME}
 serviceAccount:
   create: true
-  name: ${NAMESPACE}
+  name: ${RELEASE}
 config:
   default_index_root_uri: s3://${BUCKET}/indexes
   storage:
@@ -1220,18 +1221,18 @@ janitor:
     - secretRef: {name: byoc-logs-minio-credentials}
 EOF
 echo "=== deploying cloudprem helm chart ==="
-helm upgrade --install ${NAMESPACE} datadog/cloudprem -f /tmp/ddvals.yaml -n ${NAMESPACE}
+helm upgrade --install ${RELEASE} datadog/cloudprem -f /tmp/ddvals.yaml -n ${NAMESPACE}
 
 SECTION="pod ready wait"
 echo "=== waiting for all pods Ready (up to 20 min) ==="
 kubectl wait --for=condition=Ready pod \
-  -l app.kubernetes.io/instance=${NAMESPACE} \
+  -l app.kubernetes.io/instance=${RELEASE} \
   -n ${NAMESPACE} --timeout=1200s
 echo "=== pod status ==="
 kubectl get pods -n ${NAMESPACE}
 echo "=== restarting searcher to pick up new datadog-secret ==="
-kubectl rollout restart statefulset/${NAMESPACE}-cloudprem-searcher -n ${NAMESPACE} 2>/dev/null || true
-kubectl rollout status statefulset/${NAMESPACE}-cloudprem-searcher -n ${NAMESPACE} --timeout=300s 2>/dev/null || true
+kubectl rollout restart statefulset/${RELEASE}-cloudprem-searcher -n ${NAMESPACE} 2>/dev/null || true
+kubectl rollout status statefulset/${RELEASE}-cloudprem-searcher -n ${NAMESPACE} --timeout=300s 2>/dev/null || true
 REMOTE
 }
 
@@ -1321,7 +1322,7 @@ spec:
       apiSecret: {secretName: datadog-secret, keyName: api-key}
     env:
       - name: DD_LOGS_CONFIG_LOGS_DD_URL
-        value: http://${NAMESPACE}-cloudprem-indexer.${NAMESPACE}.svc.cluster.local:7280
+        value: http://${RELEASE}-cloudprem-indexer.${NAMESPACE}.svc.cluster.local:7280
       - name: DD_LOGS_CONFIG_EXPECTED_TAGS_DURATION
         value: "100000"
   features:
@@ -1474,7 +1475,7 @@ print_dashboard() {
 
   echo -e "  ${WHITE}${BOLD}Verify in Datadog:${NC}"
   echo ""
-  local expected_name="${NAMESPACE}-${NAMESPACE}-${CLUSTER_NAME}"
+  local expected_name="${RELEASE}-${NAMESPACE}-${CLUSTER_NAME}"
   printf "  ${CYAN}1.${NC}  %-55s\n" "https://app.${DD_SITE}/byoc-logs"
   printf "      ${DIM}%-55s${NC}\n" "→ Look for cluster: ${expected_name}"
   printf "      ${DIM}%-55s${NC}\n" "  (may show as ${expected_name}-XXXXXXXX if the name"
@@ -1576,11 +1577,12 @@ else
   esac
   echo ""
   deploy_id=$(LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 6)
-  echo -e "  ${DIM}The next two values determine your Datadog cluster identifier:${NC}"
-  echo -e "  ${DIM}  <namespace>-<namespace>-<cluster-name>${NC}"
+  echo -e "  ${DIM}The next three values determine your Datadog cluster identifier:${NC}"
+  echo -e "  ${DIM}  <helm-release>-<namespace>-<cluster-name>${NC}"
   echo -e "  ${DIM}  This is how the cluster appears in app.datadoghq.com/byoc-logs${NC}"
   echo ""
   ask "Cluster name in Datadog"                 "cloudprem-${deploy_id}"     CLUSTER_NAME
+  ask "Helm release name"                       "byoc"          RELEASE
   ask "Kubernetes namespace"                    "byoclogs"      NAMESPACE
   ask "S3 bucket name"                          "byoclogs"      BUCKET
   ask "PostgreSQL database / user"              "byoclogs"      PG_USER
@@ -1901,7 +1903,7 @@ Once established, your cluster appears in the BYOC Logs UI as:
 This phase tails the control-plane pod logs and watches for
 the connection confirmation message — up to 5 minutes.
 
-  ★ Expected cluster name: ${NAMESPACE}-${NAMESPACE}-${CLUSTER_NAME}
+  ★ Expected cluster name: ${RELEASE}-${NAMESPACE}-${CLUSTER_NAME}
 
 IMPORTANT: The 'logs-cloudprem' feature flag must be enabled
 on your Datadog org or the WebSocket will be rejected. If Phase
@@ -1940,7 +1942,7 @@ else
   echo -e "  ${YELLOW}  Most likely cause: 'logs-cloudprem' feature flag is not enabled.${NC}"
   echo -e "  ${YELLOW}  Enable it at: ${CYAN}https://mosaic.us1.ddbuild.io/feature-flags/logs-cloudprem${NC}"
   echo -e "  ${YELLOW}  Then restart the control plane:${NC}"
-  echo -e "  ${DIM}    KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout restart deployment/${NAMESPACE}-cloudprem-control-plane -n ${NAMESPACE}${NC}"
+  echo -e "  ${DIM}    KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout restart deployment/${RELEASE}-cloudprem-control-plane -n ${NAMESPACE}${NC}"
   echo ""
   echo -e "  ${DIM}  Check: ${CYAN}https://app.${DD_SITE}/byoc-logs${NC}"
   echo -e "  ${DIM}  Look for: ${WHITE}${NAMESPACE}-${NAMESPACE}-${CLUSTER_NAME}${NC}"
