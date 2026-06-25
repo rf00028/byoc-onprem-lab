@@ -642,14 +642,14 @@ A customer asks how Datadog's SaaS backend can execute search queries against da
 ---
 
 **Question 10**
-What are the two primary use cases that drive customers to choose BYOC CloudPrem over standard Datadog log management?
+What are the primary use cases that drive customers to choose BYOC CloudPrem over standard Datadog log management?
 
-- A) Cost savings and faster query performance  
-- B) **Data residency / regulatory compliance** (logs must stay on-prem or in a specific region) AND **data sovereignty** (the customer owns and controls their log infrastructure, including what gets indexed and retained)  
-- C) Easier Kubernetes deployment and lower agent resource consumption  
-- D) Support for non-standard log formats and multi-cloud routing  
+- A) Faster query performance and lower agent resource consumption  
+- B) **Data residency / regulatory compliance** (logs must stay on-prem or in a specific region) AND **cost at scale** (at ~50 TB+/day, indexing on-prem is significantly cheaper than shipping that volume to SaaS)  
+- C) Support for non-standard log formats and multi-cloud routing  
+- D) Easier Kubernetes deployment and built-in disaster recovery  
 
-✅ **Answer: B** — Data residency and sovereignty are the two headline drivers. Customers in regulated industries (finance, healthcare, government, defense) often cannot send log data outside their own infrastructure. CloudPrem gives them the full Datadog experience — search, dashboards, alerts, retention — while keeping every log byte on their own hardware.
+✅ **Answer: B** — Two distinct buyer profiles converge on CloudPrem: regulated industries (finance, healthcare, government, defense) that cannot send log data outside their own infrastructure, and high-volume customers generating 50 TB or more per day where the economics of on-prem indexing beat SaaS ingest pricing. Both get the full Datadog experience — search, dashboards, alerts, retention — while keeping log bytes on their own hardware.
 
 ---
 
